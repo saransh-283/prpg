@@ -1,0 +1,38 @@
+# Build and dependency folders
+/build/
+/vcpkg/
+/vcpkg_installed/
+
+# CMake files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*.vscode/
+
+# Logs
+*.log
+
+# Executables and binaries
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.dylib
+
+# User-specific
+*.user
+*.userosscache
+*.sln.docstates
+
+# Models
+*.gguf

@@ -1,0 +1,14 @@
+{
+  "name": "prpg",
+  "version-string": "0.1.0",
+  "dependencies": [
+    {
+      "name": "sdl2",
+      "default-features": false,
+      "features": []
+    },
+    "opengl",
+  "nlohmann-json",
+  "llama-cpp"
+  ]
+}
