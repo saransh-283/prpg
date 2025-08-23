@@ -13,10 +13,19 @@ elseif(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake")
     set(CMAKE_TOOLCHAIN_FILE "${CMAKE_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
 endif()
 
+
 # Executable
 add_executable(${PROJECT_NAME}
     src/main.cpp
 )
+
+# Perlin Roads C++ port
+add_executable(perlin_roads src/perlin_roads.cpp)
+
+find_package(unofficial-noise CONFIG REQUIRED)
+
+target_link_libraries(perlin_roads PRIVATE unofficial::noise::noise-static)
+target_include_directories(perlin_roads PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Add vcpkg include/lib dirs
 target_include_directories(${PROJECT_NAME} PRIVATE
