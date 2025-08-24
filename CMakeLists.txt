@@ -20,12 +20,12 @@ add_executable(${PROJECT_NAME}
 )
 
 # Perlin Roads C++ port
-add_executable(perlin_roads src/perlin_roads.cpp)
-
 find_package(unofficial-noise CONFIG REQUIRED)
 
-target_link_libraries(perlin_roads PRIVATE unofficial::noise::noise-static)
-target_include_directories(perlin_roads PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# Build perlin_roads and llm as part of the main executable (no separate target)
+target_sources(${PROJECT_NAME} PRIVATE src/perlin_roads.cpp src/llm.cpp src/llm.h)
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(${PROJECT_NAME} PRIVATE unofficial::noise::noise-static)
 
 # Add vcpkg include/lib dirs
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -39,6 +39,10 @@ target_link_directories(${PROJECT_NAME} PRIVATE
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+
+# Add the LLM implementation and perlin source to the main executable (no separate library)
+target_sources(${PROJECT_NAME} PRIVATE src/perlin_roads.cpp src/llm.cpp)
+
 
 # Find llama and its dependencies via vcpkg CMake config
 find_package(llama CONFIG REQUIRED)
@@ -57,3 +61,4 @@ endif()
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/pch.h)
 
 file(COPY ${CMAKE_SOURCE_DIR}/src/models DESTINATION ${CMAKE_BINARY_DIR})
+file(COPY ${CMAKE_SOURCE_DIR}/src/assets DESTINATION ${CMAKE_BINARY_DIR})
