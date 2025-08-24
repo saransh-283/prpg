@@ -6,8 +6,9 @@
 #include <vector>
 
 struct SphereMesh {
-    std::vector<TriangulateMesh> triangles;
+    TriangulateMesh mesh;
     unsigned int triangleCount;
+    unsigned int vertexCount; // non-indexed vertex count when created without indices
 };
 
 // Creates a sphere mesh using triangulation

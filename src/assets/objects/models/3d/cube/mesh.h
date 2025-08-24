@@ -6,12 +6,13 @@
 #include <vector>
 
 struct CubeMesh {
-    std::vector<TriangulateMesh> triangles;
+    TriangulateMesh mesh;
     unsigned int triangleCount;
 };
 
-// Creates a cube mesh using triangulation
-CubeMesh CreateCubeMesh(const float* vertices, size_t vertexSize, const unsigned int* indices, size_t indexCount);
+// Creates a cuboid mesh using center and dimensions (length, breadth, height).
+// If breadth or height are omitted (pass 0), they default to 'length' to create a cube.
+CubeMesh CreateCubeMesh(float centerX, float centerY, float centerZ, float length, float breadth = 0.0f, float height = 0.0f);
 
 // Cleanup cube mesh resources
 void DestroyCubeMesh(const CubeMesh& mesh);
