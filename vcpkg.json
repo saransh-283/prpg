@@ -5,10 +5,16 @@
     {
       "name": "sdl2",
       "default-features": false,
-      "features": []
+      "features": ["x11", "wayland"]
     },
-  "opengl",
-  "llama-cpp",
-  "libnoise"
+  "glad",
+    "opengl",
+    "glm",
+    "nlohmann-json",
+    "tinygltf",
+    "stb",
+    "llama-cpp",
+    "libnoise",
+    "sdl2-ttf"
   ]
 }

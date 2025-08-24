@@ -13,38 +13,52 @@ elseif(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake")
     set(CMAKE_TOOLCHAIN_FILE "${CMAKE_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
 endif()
 
-
 # Executable
-add_executable(${PROJECT_NAME}
-    src/main.cpp
+# Collect all source files under src so new modules (objects/, utils/, etc.) are included automatically
+file(GLOB_RECURSE SRC_FILES
+    ${CMAKE_SOURCE_DIR}/src/*.cpp
+    ${CMAKE_SOURCE_DIR}/src/*.c
 )
+
+add_executable(${PROJECT_NAME} ${SRC_FILES})
+
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Perlin Roads C++ port
 find_package(unofficial-noise CONFIG REQUIRED)
-
-# Build perlin_roads and llm as part of the main executable (no separate target)
-target_sources(${PROJECT_NAME} PRIVATE src/perlin_roads.cpp src/llm.cpp src/llm.h)
-target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(${PROJECT_NAME} PRIVATE unofficial::noise::noise-static)
 
-# Add vcpkg include/lib dirs
+# Find SDL2 and SDL2_ttf
+find_package(SDL2 CONFIG REQUIRED)
+find_package(SDL2_ttf CONFIG REQUIRED)
+
+# Link SDL2
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL2::SDL2 SDL2::SDL2main)
+
+# Link SDL2_ttf (handle naming differences)
+if(TARGET SDL2_ttf::SDL2_ttf)
+    target_link_libraries(${PROJECT_NAME} PRIVATE SDL2_ttf::SDL2_ttf)
+elseif(TARGET SDL2_ttf::SDL2_ttf-static)
+    target_link_libraries(${PROJECT_NAME} PRIVATE SDL2_ttf::SDL2_ttf-static)
+else()
+    message(FATAL_ERROR "Could not find SDL2_ttf target")
+endif()
+
+# Add vcpkg include/lib dirs explicitly (not always needed)
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/include
+    ${CMAKE_SOURCE_DIR}/src/assets
 )
-
 target_link_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/lib
 )
 
+# Compile definitions
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     CMAKE_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
-# Add the LLM implementation and perlin source to the main executable (no separate library)
-target_sources(${PROJECT_NAME} PRIVATE src/perlin_roads.cpp src/llm.cpp)
-
-
-# Find llama and its dependencies via vcpkg CMake config
+# Find llama and its dependencies
 find_package(llama CONFIG REQUIRED)
 find_package(ggml CONFIG QUIET)
 find_package(gguf CONFIG QUIET)
@@ -60,5 +74,26 @@ endif()
 # Precompiled header
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/pch.h)
 
+# Copy assets and models into build dir
 file(COPY ${CMAKE_SOURCE_DIR}/src/models DESTINATION ${CMAKE_BINARY_DIR})
 file(COPY ${CMAKE_SOURCE_DIR}/src/assets DESTINATION ${CMAKE_BINARY_DIR})
+file(COPY ${CMAKE_SOURCE_DIR}/src/utils DESTINATION ${CMAKE_BINARY_DIR})
+
+# Graphics and utility dependencies used by the procgen main
+find_package(OpenGL REQUIRED)
+find_package(glad CONFIG REQUIRED)
+find_package(glm CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+
+target_link_libraries(${PROJECT_NAME} PRIVATE OpenGL::GL)
+if(TARGET glad::glad)
+    target_link_libraries(${PROJECT_NAME} PRIVATE glad::glad)
+endif()
+
+if(TARGET glm::glm)
+    target_link_libraries(${PROJECT_NAME} PRIVATE glm::glm)
+endif()
+
+if(TARGET nlohmann_json::nlohmann_json)
+    target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json)
+endif()
