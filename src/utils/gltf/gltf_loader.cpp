@@ -20,7 +20,15 @@ GLTFMesh LoadGLTFMesh(const std::string& filePath) {
     std::string err;
     std::string warn;
     
-    bool ret = loader.LoadASCIIFromFile(&model, &err, &warn, filePath);
+    // Choose loader based on file extension: ASCII .gltf or binary .glb
+    bool ret = false;
+    std::string lowerPath = filePath;
+    for (auto &c : lowerPath) c = (char)tolower(c);
+    if (lowerPath.size() >= 4 && lowerPath.substr(lowerPath.size()-4) == ".glb") {
+        ret = loader.LoadBinaryFromFile(&model, &err, &warn, filePath);
+    } else {
+        ret = loader.LoadASCIIFromFile(&model, &err, &warn, filePath);
+    }
     
     if (!warn.empty()) {
         std::cout << "GLTF Warning: " << warn << std::endl;
@@ -87,6 +95,117 @@ GLTFMesh LoadGLTFMesh(const std::string& filePath) {
             gltfMesh.bones.push_back(bone);
             gltfMesh.boneTransforms.push_back(transform);
         }
+    }
+
+    // Load images
+    for (const auto &img : model.images) {
+        GLTFMesh::Image image;
+        image.name = img.name;
+        image.mimeType = img.mimeType;
+        image.width = img.width;
+        image.height = img.height;
+        image.data = img.image; // copy raw bytes
+        gltfMesh.images.push_back(image);
+    }
+
+    // Load textures (reference to images)
+    for (const auto &tex : model.textures) {
+        GLTFMesh::Texture texture;
+        texture.name = tex.name;
+        texture.sourceImage = tex.source; // -1 if none
+        gltfMesh.textures.push_back(texture);
+    }
+
+    // Load materials (pbrMetallicRoughness basics)
+    for (const auto &mat : model.materials) {
+        GLTFMesh::Material m;
+        m.name = mat.name;
+        m.baseColorTexture = -1;
+        m.baseColorFactor = glm::vec4(1.0f);
+        m.metallicFactor = 1.0f;
+        m.roughnessFactor = 1.0f;
+
+        if (mat.values.find("baseColorTexture") != mat.values.end()) {
+            const tinygltf::Parameter& p = mat.values.at("baseColorTexture");
+            if (p.TextureIndex() >= 0) m.baseColorTexture = p.TextureIndex();
+        }
+        if (mat.values.find("baseColorFactor") != mat.values.end()) {
+            const tinygltf::Parameter& p = mat.values.at("baseColorFactor");
+            if (p.number_array.size() >= 4) {
+                m.baseColorFactor = glm::vec4(
+                    (float)p.number_array[0], (float)p.number_array[1], (float)p.number_array[2], (float)p.number_array[3]
+                );
+            }
+        }
+        if (mat.values.find("metallicFactor") != mat.values.end()) {
+            m.metallicFactor = (float)mat.values.at("metallicFactor").Factor();
+        }
+        if (mat.values.find("roughnessFactor") != mat.values.end()) {
+            m.roughnessFactor = (float)mat.values.at("roughnessFactor").Factor();
+        }
+        // For newer tinygltf versions, use pbrMetallicRoughness
+        if (mat.pbrMetallicRoughness.baseColorTexture.index >= 0) {
+            m.baseColorTexture = mat.pbrMetallicRoughness.baseColorTexture.index;
+        }
+        if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
+            m.baseColorFactor = glm::vec4(
+                (float)mat.pbrMetallicRoughness.baseColorFactor[0],
+                (float)mat.pbrMetallicRoughness.baseColorFactor[1],
+                (float)mat.pbrMetallicRoughness.baseColorFactor[2],
+                (float)mat.pbrMetallicRoughness.baseColorFactor[3]
+            );
+        }
+        m.metallicFactor = (float)mat.pbrMetallicRoughness.metallicFactor;
+        m.roughnessFactor = (float)mat.pbrMetallicRoughness.roughnessFactor;
+
+        gltfMesh.materials.push_back(m);
+    }
+
+    // Load animations
+    for (const auto &anim : model.animations) {
+        GLTFMesh::Animation a;
+        a.name = anim.name;
+
+        for (const auto &channel : anim.channels) {
+            GLTFMesh::AnimationChannel ac;
+            ac.targetNode = channel.target_node;
+            ac.targetPath = channel.target_path;
+            ac.interpolation = "LINEAR";
+
+            // find sampler
+            int samplerIndex = channel.sampler;
+            if (samplerIndex >= 0 && samplerIndex < (int)anim.samplers.size()) {
+                const auto &sampler = anim.samplers[samplerIndex];
+
+                // input times
+                if (sampler.input >= 0) {
+                    const auto &accessor = model.accessors[sampler.input];
+                    const auto &bv = model.bufferViews[accessor.bufferView];
+                    const auto &buffer = model.buffers[bv.buffer];
+                    const float* times = reinterpret_cast<const float*>(&buffer.data[bv.byteOffset + accessor.byteOffset]);
+                    ac.inputTimes.assign(times, times + accessor.count);
+                }
+
+                // output values
+                if (sampler.output >= 0) {
+                    const auto &accessor = model.accessors[sampler.output];
+                    const auto &bv = model.bufferViews[accessor.bufferView];
+                    const auto &buffer = model.buffers[bv.buffer];
+                    const float* values = reinterpret_cast<const float*>(&buffer.data[bv.byteOffset + accessor.byteOffset]);
+                    size_t compCount = tinygltf::GetNumComponentsInType(accessor.type) * tinygltf::GetComponentSizeInBytes(accessor.componentType) / sizeof(float);
+                    // safer: push accessor.count * numComponents floats
+                    size_t numComponents = tinygltf::GetNumComponentsInType(accessor.type);
+                    ac.outputValues.resize(accessor.count * numComponents);
+                    for (size_t i = 0; i < accessor.count * numComponents; ++i) ac.outputValues[i] = values[i];
+                }
+
+                if (!sampler.interpolation.empty()) ac.interpolation = sampler.interpolation;
+            }
+
+            a.channels.push_back(ac);
+        }
+
+        gltfMesh.animations.push_back(a);
     }
     
     // Process each mesh in the GLTF file

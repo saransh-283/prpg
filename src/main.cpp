@@ -7,6 +7,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include "objects/text/text_renderer.h"
 #include "objects/models/3d/cube/mesh.h"
+#include "objects/models/3d/custom/mesh.h"
 #include "objects/models/3d/sphere/mesh.h"
 #include "utils/shaders/shader_utils.h"
 // Wireframe toggle for triangulated meshes
@@ -80,8 +81,8 @@ int main(int argc, char* argv[]) {
     Uint32 lastTicks = SDL_GetTicks();
     bool wireframeMode = false;
 
-    // Create meshes: unit cube centered at origin (can pass unequal sizes to make cuboids)
-    CubeMesh cubeMesh = CreateCubeMesh(0.0f, 0.0f, 0.0f, 1.0f);
+    // Create meshes: load custom model (replace cube)
+    CustomMesh customMesh = CreateCustomMesh("src/assets/objects/models/3d/custom/Custom.glb");
 
     SphereMesh sphereMesh = CreateSphereMesh(0.0f, 0.0f, 0.0f, 0.4f, 16, 24);
 
@@ -97,6 +98,7 @@ int main(int argc, char* argv[]) {
     const float moveSpeed = 2.5f; // units per second
 
     // Enable relative mouse mode for FPS-like look
+    bool mouseCaptured = true;
     SDL_SetRelativeMouseMode(SDL_TRUE);
 
     float angle = 0.0f;
@@ -116,7 +118,13 @@ int main(int argc, char* argv[]) {
                     wireframeMode = !wireframeMode;
                     SetGlobalWireframeMode(wireframeMode);
                 }
+                // Toggle mouse capture with 'M'
+                if (e.key.keysym.sym == SDLK_m) {
+                    mouseCaptured = !mouseCaptured;
+                    SDL_SetRelativeMouseMode(mouseCaptured ? SDL_TRUE : SDL_FALSE);
+                }
             }
+
             // Mouse motion for looking around
             if (e.type == SDL_MOUSEMOTION) {
                 float xrel = (float)e.motion.xrel;
@@ -161,21 +169,26 @@ int main(int argc, char* argv[]) {
             // Update view matrix from camera
             glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
 
-            // Cube on the left
-            glm::mat4 modelCube = glm::translate(glm::mat4(1.0f), glm::vec3(-1.0f, 0.0f, 0.0f));
-            modelCube = glm::rotate(modelCube, angle, glm::vec3(0.5f, 1.0f, 0.0f));
-            glm::mat4 mvpCube = proj * view * modelCube;
+            // Uniform locations reused for all objects
             GLint loc = glGetUniformLocation(program3D, "uMVP");
-            glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvpCube));
             GLint colorLoc = glGetUniformLocation(program3D, "uColor");
-            glUniform3f(colorLoc, 0.8f, 0.3f, 0.2f);
 
-            // Draw cube mesh (indexed)
-            glBindVertexArray(cubeMesh.mesh.VAO);
-            if (cubeMesh.mesh.EBO != 0) {
-                glDrawElements(GL_TRIANGLES, cubeMesh.triangleCount * 3, GL_UNSIGNED_INT, 0);
-            } else {
-                glDrawArrays(GL_TRIANGLES, 0, cubeMesh.mesh.vertexCount);
+            // Custom model on the left: draw all triangulate meshes (each triangle is a small mesh)
+            if (!customMesh.triangles.empty()) {
+                glm::mat4 modelCube = glm::translate(glm::mat4(1.0f), glm::vec3(-1.0f, 0.0f, 0.0f));
+                modelCube = glm::rotate(modelCube, angle, glm::vec3(0.5f, 1.0f, 0.0f));
+                glm::mat4 mvpCube = proj * view * modelCube;
+                glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvpCube));
+                glUniform3f(colorLoc, 0.8f, 0.3f, 0.2f);
+
+                for (const auto& cm : customMesh.triangles) {
+                    glBindVertexArray(cm.VAO);
+                    if (cm.EBO != 0) {
+                        glDrawElements(GL_TRIANGLES, cm.indexCount, GL_UNSIGNED_INT, 0);
+                    } else {
+                        glDrawArrays(GL_TRIANGLES, 0, cm.vertexCount);
+                    }
+                }
             }
 
             // Sphere on the right

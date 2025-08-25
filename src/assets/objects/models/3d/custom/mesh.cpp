@@ -1,18 +1,17 @@
 #include "mesh.h"
 #include <iostream>
 
-CustomMesh CreateCustomMesh()
+CustomMesh CreateCustomMesh(const std::string& modelPath)
 {
     CustomMesh mesh;
-    // Fallback: Load the custom model from GLTF file if no vertices provided
-    std::string gltfPath = "objects/models/3d/custom/Custom.gltf";
-    GLTFMesh gltfMesh = LoadGLTFMesh(gltfPath);
+    // Load the custom model from provided path (supports .gltf and .glb)
+    GLTFMesh gltfMesh = LoadGLTFMesh(modelPath);
 
     // Copy triangles from GLTF mesh to custom mesh
     mesh.triangles = gltfMesh.triangles;
     mesh.triangleCount = gltfMesh.triangleCount;
 
-    std::cout << "Created custom mesh with " << mesh.triangleCount << " triangles from GLTF" << std::endl;
+    std::cout << "Created custom mesh with " << mesh.triangleCount << " triangles from " << modelPath << std::endl;
 
     return mesh;
 }

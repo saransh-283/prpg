@@ -11,8 +11,8 @@ struct CustomMesh {
     unsigned int triangleCount;
 };
 
-// Creates a custom mesh using GLTF file
-CustomMesh CreateCustomMesh();
+// Creates a custom mesh using GLTF file at the provided path
+CustomMesh CreateCustomMesh(const std::string& modelPath);
 
 // Cleanup custom mesh resources
 void DestroyCustomMesh(const CustomMesh& mesh);
