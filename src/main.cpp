@@ -112,6 +112,9 @@ int main(int argc, char *argv[])
     bool mouseCaptured = true;
     SDL_SetRelativeMouseMode(SDL_TRUE);
 
+    // Flying mode toggle
+    bool flying = false;
+
     float angle = 0.0f;
 
     // Player physics
@@ -145,6 +148,24 @@ int main(int argc, char *argv[])
                 {
                     mouseCaptured = !mouseCaptured;
                     SDL_SetRelativeMouseMode(mouseCaptured ? SDL_TRUE : SDL_FALSE);
+                }
+                // Toggle flying mode with Space
+                if (e.key.keysym.sym == SDLK_SPACE)
+                {
+                    flying = !flying;
+                    if (flying)
+                    {
+                        // stop any falling motion when entering fly
+                        velocity.y = 0.0f;
+                        onGround = false;
+                    }
+                    else
+                    {
+                        // when disabling fly, ensure we're not below ground
+                        float groundY = SampleTerrainHeight(cameraPos.x, cameraPos.z) + 0.5f;
+                        if (cameraPos.y < groundY)
+                            cameraPos.y = groundY;
+                    }
                 }
             }
 
@@ -188,26 +209,37 @@ int main(int argc, char *argv[])
             cameraPos += right * moveSpeed * delta;
         }
 
-        // Jump (space)
-        if (kb[SDL_SCANCODE_SPACE] && onGround) {
-            velocity.y = 5.0f;
-            onGround = false;
+        // Flying vertical control: Up/Down when flying
+        if (flying)
+        {
+            const float flySpeed = 3.0f; // vertical units per second while flying
+            if (kb[SDL_SCANCODE_UP])
+            {
+                cameraPos.y += flySpeed * delta;
+            }
+            if (kb[SDL_SCANCODE_DOWN])
+            {
+                cameraPos.y -= flySpeed * delta;
+            }
         }
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        // Apply gravity to player
-        velocity.y += gravity * delta;
-        cameraPos += velocity * delta;
+        // Apply gravity to player (unless flying)
+        if (!flying)
+        {
+            velocity.y += gravity * delta;
+            cameraPos += velocity * delta;
 
-        // Ensure player stays above terrain
-        float groundY = SampleTerrainHeight(cameraPos.x, cameraPos.z) + 0.5f; // eye offset
-        if (cameraPos.y <= groundY) {
-            cameraPos.y = groundY;
-            velocity.y = 0.0f;
-            onGround = true;
-        } else {
-            onGround = false;
+            // Ensure player stays above terrain
+            float groundY = SampleTerrainHeight(cameraPos.x, cameraPos.z) + 0.5f; // eye offset
+            if (cameraPos.y <= groundY) {
+                cameraPos.y = groundY;
+                velocity.y = 0.0f;
+                onGround = true;
+            } else {
+                onGround = false;
+            }
         }
 
         // Render 3D shapes

@@ -4,20 +4,30 @@
 #include <cmath>
 #include <noise/noise.h>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/glm.hpp>
+#include "../roads/roads.h"
 
 struct Chunk {
     int cx, cz; // chunk coordinates
     GLuint VAO = 0;
     GLuint VBO = 0;
     GLuint EBO = 0;
+    // road mesh
+    GLuint roadVAO = 0;
+    GLuint roadVBO = 0;
+    GLuint roadEBO = 0;
     int indexCount = 0;
+    int roadIndexCount = 0;
 };
 
 static std::unordered_map<long long, Chunk> g_chunks;
 static noise::module::Perlin g_perlin;
 static int g_chunkSize = 32; // vertices per side
-static float g_scale = 1.0f; // spacing between vertices
+static float g_scale = 1.5f; // spacing between vertices (larger to make terrain more planar)
 static int g_viewRadius = 3; // generate chunks within this radius
+// terrain height scaling to reduce steepness
+static float g_heightAmplitude = 0.6f; // lower amplitude
+static float g_heightFrequency = 0.04f; // lower frequency for gentler slopes
 
 static long long keyFor(int cx, int cz) {
     return (static_cast<long long>(cx) << 32) ^ static_cast<unsigned int>(cz);
@@ -25,13 +35,13 @@ static long long keyFor(int cx, int cz) {
 
 bool InitTerrain() {
     g_perlin.SetSeed(1337);
-    g_perlin.SetFrequency(1.0);
+    g_perlin.SetFrequency(g_heightFrequency);
     return true;
 }
 
 static float sampleHeight(float x, float z) {
-    double v = g_perlin.GetValue(x * 0.08, z * 0.08, 0.0);
-    return static_cast<float>(v * 2.0); // scale height
+    double v = g_perlin.GetValue(x * g_heightFrequency, z * g_heightFrequency, 0.0);
+    return static_cast<float>(v * g_heightAmplitude);
 }
 
 float SampleTerrainHeight(float x, float z) {
@@ -87,6 +97,70 @@ static void createChunkMesh(Chunk& c) {
     glBindVertexArray(0);
 
     c.indexCount = (int)indices.size();
+
+    // generate roads for this chunk using roads module (polylines in world XZ)
+    int padding = 8; // keep small padding for roads
+    auto polylines = generate_perlin_roads_chunk_polylines(c.cx, c.cz, g_chunkSize *  (int)g_scale, padding, 64, 200, 1.0f, 0.02f, 1337, 4, 1.0f);
+    // build simple ribbon mesh for roads: two vertices per poly point offset along tangent
+    std::vector<float> roadVerts;
+    std::vector<unsigned int> roadIdx;
+    int baseVert = 0;
+    float halfWidth = 0.5f; // world units
+    for (auto &poly : polylines) {
+        if (poly.size() < 2) continue;
+        // build vertices
+        for (size_t i = 0; i < poly.size(); ++i) {
+            glm::vec2 p = poly[i];
+            // compute tangent
+            glm::vec2 t;
+            if (i + 1 < poly.size()) t = glm::normalize(poly[i+1] - p);
+            else t = glm::normalize(p - poly[i-1]);
+            glm::vec2 n = glm::vec2(-t.y, t.x);
+            glm::vec2 left = p + n * halfWidth;
+            glm::vec2 right = p - n * halfWidth;
+            float hy = sampleHeight(left.x, left.y);
+            float ry = sampleHeight(right.x, right.y);
+            // left vertex
+            roadVerts.push_back(left.x);
+            roadVerts.push_back(hy + 0.01f); // slight offset to avoid z-fighting
+            roadVerts.push_back(left.y);
+            // right vertex
+            roadVerts.push_back(right.x);
+            roadVerts.push_back(ry + 0.01f);
+            roadVerts.push_back(right.y);
+        }
+        // indices
+        int pts = (int)poly.size();
+        for (int i = 0; i < pts - 1; ++i) {
+            int a = baseVert + i * 2;
+            int b = baseVert + i * 2 + 1;
+            int c2 = baseVert + (i+1) * 2;
+            int d = baseVert + (i+1) * 2 + 1;
+            // two tris (a,c,b) and (b,c,d) but ensure winding
+            roadIdx.push_back(a);
+            roadIdx.push_back(c2);
+            roadIdx.push_back(b);
+            roadIdx.push_back(b);
+            roadIdx.push_back(c2);
+            roadIdx.push_back(d);
+        }
+        baseVert += pts * 2;
+    }
+
+    if (!roadVerts.empty()) {
+        glGenVertexArrays(1, &c.roadVAO);
+        glGenBuffers(1, &c.roadVBO);
+        glGenBuffers(1, &c.roadEBO);
+        glBindVertexArray(c.roadVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, c.roadVBO);
+        glBufferData(GL_ARRAY_BUFFER, roadVerts.size() * sizeof(float), roadVerts.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, c.roadEBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, roadIdx.size() * sizeof(unsigned int), roadIdx.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glBindVertexArray(0);
+        c.roadIndexCount = (int)roadIdx.size();
+    }
 }
 
 static void destroyChunk(Chunk& c) {
@@ -95,6 +169,11 @@ static void destroyChunk(Chunk& c) {
     if (c.EBO) glDeleteBuffers(1, &c.EBO);
     c.VAO = c.VBO = c.EBO = 0;
     c.indexCount = 0;
+    if (c.roadVAO) glDeleteVertexArrays(1, &c.roadVAO);
+    if (c.roadVBO) glDeleteBuffers(1, &c.roadVBO);
+    if (c.roadEBO) glDeleteBuffers(1, &c.roadEBO);
+    c.roadVAO = c.roadVBO = c.roadEBO = 0;
+    c.roadIndexCount = 0;
 }
 
 void UpdateTerrain(const glm::vec3& cameraPos) {
@@ -145,6 +224,12 @@ void RenderTerrain(GLuint program, const glm::mat4& proj, const glm::mat4& view)
         glUniform3f(colorLoc, 0.3f, 0.8f, 0.3f);
         glBindVertexArray(c.VAO);
         glDrawElements(GL_TRIANGLES, c.indexCount, GL_UNSIGNED_INT, 0);
+        // draw roads if available (use same program and color differently)
+        if (c.roadVAO && c.roadIndexCount > 0) {
+            glUniform3f(colorLoc, 0.1f, 0.1f, 0.1f);
+            glBindVertexArray(c.roadVAO);
+            glDrawElements(GL_TRIANGLES, c.roadIndexCount, GL_UNSIGNED_INT, 0);
+        }
     }
 
     glBindVertexArray(0);

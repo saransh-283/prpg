@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <noise/noise.h>
+#include <glm/glm.hpp>
 
 // Draw a filled disk (circle) at (x, y) with given radius
 static void draw_disk(std::vector<uint8_t>& canvas, int width, int height, int x, int y, int radius = 2) {
@@ -135,4 +136,46 @@ std::vector<uint8_t> generate_perlin_roads_chunk(int chunk_x, int chunk_y, int c
         }
     }
     return cropped;
+}
+
+// New: generate polylines in world XZ coordinates for a chunk (including padding)
+std::vector<std::vector<glm::vec2>> generate_perlin_roads_chunk_polylines(int chunk_x, int chunk_y, int chunk_size, int padding, int num_worms, int worm_length, float step_size, float perlin_scale, int seed, int grid_angles, float noise_strength) {
+    int wx = chunk_x * chunk_size - padding;
+    int wy = chunk_y * chunk_size - padding; // wy here is world Z
+    int size = chunk_size + 2 * padding;
+
+    noise::module::Perlin perlin;
+    perlin.SetSeed(seed);
+
+    int cell_spacing = std::max(16, padding / 2);
+    int gx_min = static_cast<int>(std::floor((double)wx / cell_spacing));
+    int gx_max = static_cast<int>(std::floor((double)(wx + size) / cell_spacing));
+    int gy_min = static_cast<int>(std::floor((double)wy / cell_spacing));
+    int gy_max = static_cast<int>(std::floor((double)(wy + size) / cell_spacing));
+
+    std::vector<std::vector<glm::vec2>> polylines;
+    int count = 0;
+    for (int gx = gx_min; gx <= gx_max; ++gx) {
+        for (int gy = gy_min; gy <= gy_max; ++gy) {
+            if (count >= num_worms) break;
+            double u = deterministic_unit(gx, gy, seed + 0);
+            double v = deterministic_unit(gx, gy, seed + 1);
+            double x = gx * (double)cell_spacing + u * (double)cell_spacing;
+            double y = gy * (double)cell_spacing + v * (double)cell_spacing;
+
+            std::vector<glm::vec2> poly;
+            poly.reserve(worm_length);
+            for (int j = 0; j < worm_length; ++j) {
+                // world-space x,z
+                poly.emplace_back((float)x, (float)y);
+                float angle = quantized_angle((float)x, (float)y, perlin_scale, grid_angles, noise_strength, perlin);
+                x += std::cos(angle) * step_size;
+                y += std::sin(angle) * step_size;
+            }
+            polylines.push_back(std::move(poly));
+            ++count;
+        }
+        if (count >= num_worms) break;
+    }
+    return polylines;
 }
