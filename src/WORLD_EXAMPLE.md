@@ -1,4 +1,4 @@
-**Perlin Roads**
+**Roads**
 
 ```cpp
 // The canvas is a single-channel grayscale
