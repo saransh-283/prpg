@@ -17,3 +17,6 @@ void CleanupTerrain();
 
 // Query terrain height at world (x, z)
 float SampleTerrainHeight(float x, float z);
+
+// Convert a world-space XZ position to chunk coordinates (cx, cz)
+void WorldToChunk(float x, float z, int &out_cx, int &out_cz);

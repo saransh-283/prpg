@@ -2,7 +2,7 @@
 #define SPHERE_MESH_H
 
 #include <glad/glad.h>
-#include "utils/triangulate/mesh.h"
+#include <utils/triangulate/mesh.h>
 #include <vector>
 
 struct SphereMesh {

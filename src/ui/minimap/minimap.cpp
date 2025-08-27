@@ -2,7 +2,7 @@
 #include <glad/glad.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include "../../world/terrain/terrain.h"
+#include <world/terrain/terrain.h>
 
 static GLuint g_miniVAO = 0;
 static GLuint g_miniVBO = 0;

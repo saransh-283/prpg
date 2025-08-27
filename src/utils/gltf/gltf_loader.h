@@ -1,7 +1,7 @@
 #ifndef GLTF_LOADER_H
 #define GLTF_LOADER_H
 
-#include "utils/triangulate/mesh.h"
+#include <utils/triangulate/mesh.h>
 #include <vector>
 #include <string>
 #include <glm/glm.hpp>

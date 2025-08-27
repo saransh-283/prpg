@@ -5,7 +5,7 @@
 #include <noise/noise.h>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/glm.hpp>
-#include "../roads/roads.h"
+#include <world/roads/roads.h>
 
 struct Chunk {
     int cx, cz; // chunk coordinates
@@ -241,4 +241,9 @@ void CleanupTerrain() {
         destroyChunk(kv.second);
     }
     g_chunks.clear();
+}
+
+void WorldToChunk(float x, float z, int &out_cx, int &out_cz) {
+    out_cx = static_cast<int>(std::floor(x / ((g_chunkSize - 1) * g_scale)));
+    out_cz = static_cast<int>(std::floor(z / ((g_chunkSize - 1) * g_scale)));
 }

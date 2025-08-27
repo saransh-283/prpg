@@ -2,8 +2,8 @@
 #define CUSTOM_MESH_H
 
 #include <glad/glad.h>
-#include "utils/triangulate/mesh.h"
-#include "utils/gltf/gltf_loader.h"
+#include <utils/triangulate/mesh.h>
+#include <utils/gltf/gltf_loader.h>
 #include <vector>
 
 struct CustomMesh {

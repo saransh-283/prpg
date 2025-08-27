@@ -5,17 +5,19 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include "objects/text/text_renderer.h"
-#include "objects/models/3d/cube/mesh.h"
-#include "objects/models/3d/custom/mesh.h"
-#include "objects/models/3d/sphere/mesh.h"
-#include "utils/shaders/shader_utils.h"
+#include <objects/text/text_renderer.h>
+#include <objects/models/3d/cube/mesh.h>
+#include <objects/models/3d/custom/mesh.h>
+#include <objects/models/3d/sphere/mesh.h>
+#include <utils/shaders/shader_utils.h>
 // Wireframe toggle for triangulated meshes
-#include "utils/triangulate/mesh.h"
+#include <utils/triangulate/mesh.h>
 // Infinite terrain
-#include "world/terrain/terrain.h"
+#include <world/terrain/terrain.h>
 // Minimap UI
-#include "ui/minimap/minimap.h"
+#include <ui/minimap/minimap.h>
+// Debug overlay (hidden by default, toggled with tilde/backquote)
+#include <ui/debug/debug_overlay.h>
 
 int main(int argc, char *argv[])
 {
@@ -129,6 +131,9 @@ int main(int argc, char *argv[])
         std::cerr << "Failed to initialize minimap" << std::endl;
     }
 
+    // Initialize debug overlay (starts hidden)
+    InitDebugOverlay();
+
     while (running)
     {
         Uint32 now = SDL_GetTicks();
@@ -144,6 +149,11 @@ int main(int argc, char *argv[])
             {
                 if (e.key.keysym.sym == SDLK_ESCAPE)
                     running = false;
+                // Toggle debug overlay with tilde/backquote key (`/~)
+                if (e.key.keysym.sym == SDLK_BACKQUOTE)
+                {
+                    ToggleDebugOverlay();
+                }
                 // Toggle global wireframe mode with 'F'
                 if (e.key.keysym.sym == SDLK_f)
                 {
@@ -273,12 +283,8 @@ int main(int argc, char *argv[])
             RenderMinimap(cameraPos, windowW, windowH, program3D);
         }
 
-        // Example overlay text lines
-        RenderTextOverlay("PROCGEN - Minimal Text Demo", 10.0f, 10.0f, windowW, windowH);
-        RenderTextOverlay("Press ESC or close window to exit", 10.0f, 70.0f, windowW, windowH);
-        char wfbuf[64];
-        snprintf(wfbuf, sizeof(wfbuf), "Wireframe: %s (press 'F' to toggle)", (wireframeMode ? "ON" : "OFF"));
-        RenderTextOverlay(wfbuf, 10.0f, 100.0f, windowW, windowH);
+    // Debug overlay (hidden by default)
+    RenderDebugOverlay(windowW, windowH, wireframeMode, cameraPos);
 
         SDL_GL_SwapWindow(window);
 
@@ -288,6 +294,8 @@ int main(int argc, char *argv[])
     }
 
     CleanupTextOverlay();
+
+    CleanupDebugOverlay();
 
     CleanupTerrain();
 
