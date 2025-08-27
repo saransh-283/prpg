@@ -18,6 +18,8 @@ struct Chunk {
     GLuint roadEBO = 0;
     int indexCount = 0;
     int roadIndexCount = 0;
+    // store generated polyline data (vector of polylines)
+    std::vector<std::vector<glm::vec2>> roadPolylines;
 };
 
 static std::unordered_map<long long, Chunk> g_chunks;
@@ -161,6 +163,165 @@ static void createChunkMesh(Chunk& c) {
         glBindVertexArray(0);
         c.roadIndexCount = (int)roadIdx.size();
     }
+}
+
+// Public API: generate terrain chunk (terrain mesh only)
+bool GenerateTerrainChunk(int cx, int cz) {
+    long long k = keyFor(cx, cz);
+    if (g_chunks.find(k) != g_chunks.end()) return true; // already present
+    Chunk c;
+    c.cx = cx; c.cz = cz;
+    createChunkMesh(c);
+    // store without road generation (roads are created separately via GenerateRoadsForChunk)
+    g_chunks[k] = c;
+    return true;
+}
+
+// Build road geometry for a single chunk and attach to chunk structure. If the chunk
+// isn't present it will be created first.
+bool GenerateRoadsForChunk(int cx, int cz) {
+    long long k = keyFor(cx, cz);
+    if (g_chunks.find(k) == g_chunks.end()) {
+        Chunk c;
+        c.cx = cx; c.cz = cz;
+        createChunkMesh(c);
+        g_chunks[k] = c;
+    }
+    Chunk &c = g_chunks[k];
+    // reuse earlier road building logic from createChunkMesh but only roads
+    int padding = 8;
+    auto polylines = generate_perlin_roads_chunk_polylines(c.cx, c.cz, g_chunkSize *  (int)g_scale, padding, 64, 200, 1.0f, 0.02f, 1337, 4, 1.0f);
+    // store polylines so later searches can use generated data without regenerating
+    c.roadPolylines = polylines;
+    std::vector<float> roadVerts;
+    std::vector<unsigned int> roadIdx;
+    int baseVert = 0;
+    float halfWidth = 0.5f;
+    for (auto &poly : polylines) {
+        if (poly.size() < 2) continue;
+        for (size_t i = 0; i < poly.size(); ++i) {
+            glm::vec2 p = poly[i];
+            glm::vec2 t;
+            if (i + 1 < poly.size()) t = glm::normalize(poly[i+1] - p);
+            else t = glm::normalize(p - poly[i-1]);
+            glm::vec2 n = glm::vec2(-t.y, t.x);
+            glm::vec2 left = p + n * halfWidth;
+            glm::vec2 right = p - n * halfWidth;
+            float hy = sampleHeight(left.x, left.y);
+            float ry = sampleHeight(right.x, right.y);
+            roadVerts.push_back(left.x);
+            roadVerts.push_back(hy + 0.01f);
+            roadVerts.push_back(left.y);
+            roadVerts.push_back(right.x);
+            roadVerts.push_back(ry + 0.01f);
+            roadVerts.push_back(right.y);
+        }
+        int pts = (int)poly.size();
+        for (int i = 0; i < pts - 1; ++i) {
+            int a = baseVert + i * 2;
+            int b = baseVert + i * 2 + 1;
+            int c2 = baseVert + (i+1) * 2;
+            int d = baseVert + (i+1) * 2 + 1;
+            roadIdx.push_back(a);
+            roadIdx.push_back(c2);
+            roadIdx.push_back(b);
+            roadIdx.push_back(b);
+            roadIdx.push_back(c2);
+            roadIdx.push_back(d);
+        }
+        baseVert += pts * 2;
+    }
+
+    if (!roadVerts.empty()) {
+        if (c.roadVAO) {
+            glDeleteVertexArrays(1, &c.roadVAO);
+            glDeleteBuffers(1, &c.roadVBO);
+            glDeleteBuffers(1, &c.roadEBO);
+        }
+        glGenVertexArrays(1, &c.roadVAO);
+        glGenBuffers(1, &c.roadVBO);
+        glGenBuffers(1, &c.roadEBO);
+        glBindVertexArray(c.roadVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, c.roadVBO);
+        glBufferData(GL_ARRAY_BUFFER, roadVerts.size() * sizeof(float), roadVerts.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, c.roadEBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, roadIdx.size() * sizeof(unsigned int), roadIdx.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glBindVertexArray(0);
+        c.roadIndexCount = (int)roadIdx.size();
+    }
+
+    return true;
+}
+
+// Search only among already-generated chunks' stored polylines
+bool DetermineSpawnFromGenerated(float x, float z, glm::vec2 &out_point, int search_radius_chunks) {
+    // compute chunk containing point
+    int cx = static_cast<int>(std::floor(x / ((g_chunkSize - 1) * g_scale)));
+    int cz = static_cast<int>(std::floor(z / ((g_chunkSize - 1) * g_scale)));
+
+    float bestDist2 = std::numeric_limits<float>::infinity();
+    glm::vec2 bestPoint(x, z);
+    int bestScore = 0;
+    const float intersectionRadius = 4.0f;
+
+    for (int dz = -search_radius_chunks; dz <= search_radius_chunks; ++dz) {
+        for (int dx = -search_radius_chunks; dx <= search_radius_chunks; ++dx) {
+            int nx = cx + dx;
+            int nz = cz + dz;
+            long long k = keyFor(nx, nz);
+            auto it = g_chunks.find(k);
+            if (it == g_chunks.end()) continue; // skip chunks not generated
+            Chunk &c = it->second;
+            // use stored polylines
+            for (auto &poly : c.roadPolylines) {
+                if (poly.size() < 2) continue;
+                for (size_t i = 0; i + 1 < poly.size(); ++i) {
+                    glm::vec2 a = poly[i];
+                    glm::vec2 b = poly[i+1];
+                    glm::vec2 ab = b - a;
+                    float abLen2 = glm::dot(ab, ab);
+                    float t = 0.0f;
+                    if (abLen2 > 0.00001f) {
+                        t = glm::dot(glm::vec2(x, z) - a, ab) / abLen2;
+                        t = std::max(0.0f, std::min(1.0f, t));
+                    }
+                    glm::vec2 proj = a + ab * t;
+                    float dxp = proj.x - x;
+                    float dzp = proj.y - z;
+                    float d2 = dxp*dxp + dzp*dzp;
+
+                    int score = 0;
+                    // basic intersection scoring: count other nearby points in this chunk's polylines
+                    for (auto &otherPoly : c.roadPolylines) {
+                        for (auto &other : otherPoly) {
+                            float ddx = other.x - proj.x;
+                            float ddz = other.y - proj.y;
+                            if (ddx*ddx + ddz*ddz <= intersectionRadius * intersectionRadius) ++score;
+                        }
+                    }
+
+                    if (score > bestScore || (score == bestScore && d2 < bestDist2)) {
+                        bestScore = score;
+                        bestDist2 = d2;
+                        bestPoint = proj;
+                    }
+                }
+            }
+        }
+    }
+
+    if (bestScore > 0 || bestDist2 < std::numeric_limits<float>::infinity()) {
+        out_point = bestPoint;
+        return true;
+    }
+    return false;
+}
+
+// Determine spawn point using existing road search helper
+glm::vec2 DetermineSpawnPoint(float x, float z, int search_radius_chunks) {
+    return find_nearest_road_point(x, z, search_radius_chunks, g_chunkSize * (int)g_scale);
 }
 
 static void destroyChunk(Chunk& c) {

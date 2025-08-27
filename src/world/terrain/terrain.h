@@ -20,3 +20,16 @@ float SampleTerrainHeight(float x, float z);
 
 // Convert a world-space XZ position to chunk coordinates (cx, cz)
 void WorldToChunk(float x, float z, int &out_cx, int &out_cz);
+
+// Generate a single terrain chunk (terrain mesh only) at chunk coords. Returns true on success.
+bool GenerateTerrainChunk(int cx, int cz);
+
+// Generate road mesh for a single chunk. Returns true on success.
+bool GenerateRoadsForChunk(int cx, int cz);
+
+// Determine a good spawn point (nearest road) near world (x,z). Returns world x,z in out vector.
+glm::vec2 DetermineSpawnPoint(float x, float z, int search_radius_chunks = 2);
+
+// Determine spawn using only already-generated chunk road data (no on-the-fly generation).
+// Returns true and writes out point if a candidate was found; returns false otherwise.
+bool DetermineSpawnFromGenerated(float x, float z, glm::vec2 &out_point, int search_radius_chunks = 2);

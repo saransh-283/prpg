@@ -6,6 +6,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <objects/text/text_renderer.h>
+#include <ui/loading/loading.h>
 #include <objects/models/3d/cube/mesh.h>
 #include <objects/models/3d/custom/mesh.h>
 #include <objects/models/3d/sphere/mesh.h>
@@ -82,13 +83,120 @@ int main(int argc, char *argv[])
     // Initialize the project's text overlay system
     InitTextOverlay();
 
-    // Initialize terrain system
+    // Initialize the loading screen and enqueue initialization tasks so we can
+    // show progress while performing GPU/CPU setup on the main thread.
+    InitLoading();
+
+    // Initialize terrain system (must be done before generating chunks so
+    // SampleTerrainHeight and road generation use a seeded/initialized perlin).
     if (!InitTerrain()) {
         std::cerr << "Failed to initialize terrain" << std::endl;
     }
 
-    // --- Load simple 3D shader from files ---
+    // Enqueue tasks: they run one-per-update and can call initialization
+    // functions that rely on an active GL context.
+    // Instead of one big InitTerrain, enqueue per-chunk tasks for finer progress.
+    // Use the same view radius as the terrain module (approx 3 chunks).
+    const int initialViewRadius = 3;
+    // center at 0,0 for initial generation
+    int centerCx = 0;
+    int centerCz = 0;
+    // initial camera/spawn holder used by the spawn determination task
+    glm::vec3 initialCameraPos(0.0f, 0.0f, 3.0f);
+
+    for (int dz = -initialViewRadius; dz <= initialViewRadius; ++dz) {
+        for (int dx = -initialViewRadius; dx <= initialViewRadius; ++dx) {
+            int cx = centerCx + dx;
+            int cz = centerCz + dz;
+            // terrain mesh generation per chunk
+            AddLoadingTask([cx, cz](){ return GenerateTerrainChunk(cx, cz); }, "GenChunk");
+            // road generation for the same chunk as a separate task; after generating
+            // roads check if we can determine a spawn from already-generated data
+            AddLoadingTask([cx, cz, &initialCameraPos](){
+                bool ok = GenerateRoadsForChunk(cx, cz);
+                if (!ok) return false;
+                glm::vec2 candidate;
+                // search only among generated chunks so far
+                if (DetermineSpawnFromGenerated(initialCameraPos.x, initialCameraPos.z, candidate, 2)) {
+                    // if found, update initialCameraPos and cancel remaining tasks
+                    initialCameraPos.x = candidate.x;
+                    initialCameraPos.z = candidate.y;
+                    initialCameraPos.y = SampleTerrainHeight(candidate.x, candidate.y) + 0.5f;
+                    ClearLoadingTasks();
+                }
+                return true;
+            }, "GenRoads");
+        }
+    }
+
+    // After chunks are generated, determine spawn point near origin as a separate task
+    // initialCameraPos will be modified by this task and used later to initialize cameraPos
+    AddLoadingTask([&](){
+        glm::vec2 spawn = DetermineSpawnPoint(initialCameraPos.x, initialCameraPos.z, 2);
+        // store the spawn into the initialCameraPos variable capture; main will use it
+        initialCameraPos.x = spawn.x;
+        initialCameraPos.z = spawn.y;
+        initialCameraPos.y = SampleTerrainHeight(spawn.x, spawn.y) + 0.5f;
+        return true;
+    }, "DetermineSpawn");
+    AddLoadingTask([&](){
+        // Load simple 3D shader from files
+        GLuint program3D_local = 0;
+        bool ok = LoadShaderProgram("src/utils/shaders/simple3d.vert", "src/utils/shaders/simple3d.frag", program3D_local);
+        // store program id in a global-like place by setting program3D via pointer in outer scope
+        // We'll keep program3D variable and set after tasks finish; for now return ok.
+        return ok;
+    }, "LoadShaders");
+
+    // Initialize minimap synchronously so its resources are available even if
+    // the loader early-exits after finding a spawn from generated roads.
+    if (!InitMinimap()) {
+        std::cerr << "Failed to initialize minimap" << std::endl;
+    }
+    AddLoadingTask([](){ InitDebugOverlay(); return true; }, "InitDebugOverlay");
+
+    // A finalization task that does lightweight setup if needed
+    AddLoadingTask([](){ return true; }, "FinalizeLoading");
+
+    // We'll hold the shader program variable and attempt to load it again after loading
     GLuint program3D = 0;
+
+    // Run a small loading loop until tasks complete. This keeps the window
+    // responsive and draws the loading overlay using the same GL context.
+    bool loading = true;
+    Uint32 lastTicksLoad = SDL_GetTicks();
+    while (loading)
+    {
+        Uint32 now = SDL_GetTicks();
+        float delta = (now - lastTicksLoad) / 1000.0f;
+        lastTicksLoad = now;
+
+        SDL_Event e;
+        while (SDL_PollEvent(&e))
+        {
+            if (e.type == SDL_QUIT) {
+                SDL_GL_DeleteContext(glContext);
+                SDL_DestroyWindow(window);
+                SDL_Quit();
+                return 0;
+            }
+        }
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        // Run one loading step and render overlay
+        UpdateLoading();
+        RenderLoading(windowW, windowH);
+
+        SDL_GL_SwapWindow(window);
+
+        if (IsLoadingDone()) loading = false;
+
+        // small sleep to avoid pegging CPU
+        SDL_Delay(10);
+    }
+
+    // Try loading shader program once more and store to program3D
     if (!LoadShaderProgram("src/utils/shaders/simple3d.vert", "src/utils/shaders/simple3d.frag", program3D))
     {
         std::cerr << "Failed to load 3D shader program" << std::endl;
@@ -104,7 +212,8 @@ int main(int argc, char *argv[])
     // Camera/projection setup
     glm::mat4 proj = glm::perspective(glm::radians(60.0f), (float)windowW / (float)windowH, 0.1f, 100.0f);
     // Camera state (position, orientation)
-    glm::vec3 cameraPos(0.0f, 0.0f, 3.0f);
+    // Use the initialCameraPos determined by the loading task
+    glm::vec3 cameraPos = initialCameraPos;
     glm::vec3 cameraFront(0.0f, 0.0f, -1.0f);
     glm::vec3 cameraUp(0.0f, 1.0f, 0.0f);
     float yaw = -90.0f; // degrees, -Z
@@ -126,23 +235,7 @@ int main(int argc, char *argv[])
     const float gravity = -9.81f;
     bool onGround = false;
 
-    // Initialize minimap
-    if (!InitMinimap()) {
-        std::cerr << "Failed to initialize minimap" << std::endl;
-    }
-
-    // Place player on nearest road at startup (search 2 chunks radius)
-    {
-        // chunk_size used by roads generation in terrain is g_chunkSize * (int)g_scale
-        int chunk_size_world = 32 *  (int)1.5f; // keep in sync with terrain module defaults
-        extern glm::vec2 find_nearest_road_point(float x, float z, int search_radius_chunks, int chunk_size);
-        glm::vec2 roadPt = find_nearest_road_point(cameraPos.x, cameraPos.z, 2, chunk_size_world);
-        // set camera XZ to road point and place camera slightly above terrain
-        cameraPos.x = roadPt.x;
-        cameraPos.z = roadPt.y;
-        float groundY = SampleTerrainHeight(cameraPos.x, cameraPos.z) + 0.5f;
-        cameraPos.y = groundY;
-    }
+    // Spawn point was computed during loading and cameraPos updated accordingly if available
 
     // Initialize debug overlay (starts hidden)
     InitDebugOverlay();
