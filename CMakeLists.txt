@@ -71,9 +71,6 @@ if(TARGET gguf)
     target_link_libraries(${PROJECT_NAME} PRIVATE gguf)
 endif()
 
-# Precompiled header
-target_precompile_headers(${PROJECT_NAME} PRIVATE src/pch.h)
-
 # Copy assets and models into build dir
 file(COPY ${CMAKE_SOURCE_DIR}/src/models DESTINATION ${CMAKE_BINARY_DIR})
 file(COPY ${CMAKE_SOURCE_DIR}/src/assets DESTINATION ${CMAKE_BINARY_DIR})

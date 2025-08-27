@@ -1,6 +1,7 @@
 #ifndef TRIANGULATE_MESH_H
 #define TRIANGULATE_MESH_H
 
+#include <cstddef>
 #include <glad/glad.h>
 
 struct TriangulateMesh {

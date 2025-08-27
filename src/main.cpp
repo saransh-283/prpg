@@ -14,6 +14,8 @@
 #include "utils/triangulate/mesh.h"
 // Infinite terrain
 #include "world/terrain/terrain.h"
+// Minimap UI
+#include "ui/minimap/minimap.h"
 
 int main(int argc, char *argv[])
 {
@@ -121,6 +123,11 @@ int main(int argc, char *argv[])
     glm::vec3 velocity(0.0f);
     const float gravity = -9.81f;
     bool onGround = false;
+
+    // Initialize minimap
+    if (!InitMinimap()) {
+        std::cerr << "Failed to initialize minimap" << std::endl;
+    }
 
     while (running)
     {
@@ -261,6 +268,9 @@ int main(int argc, char *argv[])
 
             // Render terrain (uses same simple3d shader)
             RenderTerrain(program3D, proj, view);
+
+            // Render minimap UI
+            RenderMinimap(cameraPos, windowW, windowH, program3D);
         }
 
         // Example overlay text lines
@@ -280,6 +290,9 @@ int main(int argc, char *argv[])
     CleanupTextOverlay();
 
     CleanupTerrain();
+
+    // Cleanup minimap
+    CleanupMinimap();
 
     SDL_GL_DeleteContext(glContext);
     SDL_DestroyWindow(window);
