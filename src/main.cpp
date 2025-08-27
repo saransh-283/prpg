@@ -131,6 +131,19 @@ int main(int argc, char *argv[])
         std::cerr << "Failed to initialize minimap" << std::endl;
     }
 
+    // Place player on nearest road at startup (search 2 chunks radius)
+    {
+        // chunk_size used by roads generation in terrain is g_chunkSize * (int)g_scale
+        int chunk_size_world = 32 *  (int)1.5f; // keep in sync with terrain module defaults
+        extern glm::vec2 find_nearest_road_point(float x, float z, int search_radius_chunks, int chunk_size);
+        glm::vec2 roadPt = find_nearest_road_point(cameraPos.x, cameraPos.z, 2, chunk_size_world);
+        // set camera XZ to road point and place camera slightly above terrain
+        cameraPos.x = roadPt.x;
+        cameraPos.z = roadPt.y;
+        float groundY = SampleTerrainHeight(cameraPos.x, cameraPos.z) + 0.5f;
+        cameraPos.y = groundY;
+    }
+
     // Initialize debug overlay (starts hidden)
     InitDebugOverlay();
 

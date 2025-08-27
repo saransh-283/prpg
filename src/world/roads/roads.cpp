@@ -3,6 +3,8 @@
 #include <random>
 #include <cmath>
 #include <cstdint>
+#include <limits>
+#include <algorithm>
 #include <noise/noise.h>
 #include <glm/glm.hpp>
 
@@ -178,4 +180,71 @@ std::vector<std::vector<glm::vec2>> generate_perlin_roads_chunk_polylines(int ch
         if (count >= num_worms) break;
     }
     return polylines;
+}
+
+// Find nearest point on generated roads to (x,z). Search neighboring chunks within search_radius_chunks.
+// Find nearest point on generated roads to (x,z). Search neighboring chunks within search_radius_chunks.
+glm::vec2 find_nearest_road_point(float x, float z, int search_radius_chunks, int chunk_size) {
+    // Map world x,z to chunk coordinates (using same chunk_size as generation)
+    int cx = static_cast<int>(std::floor(x / (double)chunk_size));
+    int cz = static_cast<int>(std::floor(z / (double)chunk_size));
+
+    float bestDist2 = std::numeric_limits<float>::infinity();
+    glm::vec2 bestPoint(x, z);
+    int bestScore = 0; // intersection score (higher = better)
+
+    int padding = 8; // match usage in terrain
+    const float intersectionRadius = 4.0f; // units to consider nearby roads as intersection
+
+    // Accumulate all nearby poly points to enable intersection scoring
+    std::vector<glm::vec2> nearbyPoints;
+
+    for (int dz = -search_radius_chunks; dz <= search_radius_chunks; ++dz) {
+        for (int dx = -search_radius_chunks; dx <= search_radius_chunks; ++dx) {
+            int nx = cx + dx;
+            int nz = cz + dz;
+            // generate polylines for this chunk (deterministic)
+            auto polylines = generate_perlin_roads_chunk_polylines(nx, nz, chunk_size, padding, 64, 200, 1.0f, 0.02f, 1337, 4, 1.0f);
+            for (auto &poly : polylines) {
+                // store points for intersection checks
+                for (auto &pt : poly) nearbyPoints.push_back(pt);
+
+                // check segments for closer projection
+                if (poly.size() < 2) continue;
+                for (size_t i = 0; i + 1 < poly.size(); ++i) {
+                    glm::vec2 a = poly[i];
+                    glm::vec2 b = poly[i+1];
+                    // project (x,z) onto segment ab
+                    glm::vec2 ab = b - a;
+                    float abLen2 = glm::dot(ab, ab);
+                    float t = 0.0f;
+                    if (abLen2 > 0.00001f) {
+                        t = glm::dot(glm::vec2(x, z) - a, ab) / abLen2;
+                        t = std::max(0.0f, std::min(1.0f, t));
+                    }
+                    glm::vec2 proj = a + ab * t;
+                    float dxp = proj.x - x;
+                    float dzp = proj.y - z;
+                    float d2 = dxp*dxp + dzp*dzp;
+
+                    // compute intersection score = number of other points within intersectionRadius
+                    int score = 0;
+                    for (auto &other : nearbyPoints) {
+                        float ddx = other.x - proj.x;
+                        float ddz = other.y - proj.y;
+                        if (ddx*ddx + ddz*ddz <= intersectionRadius * intersectionRadius) ++score;
+                    }
+
+                    // prefer higher score (intersections), otherwise smaller distance
+                    if (score > bestScore || (score == bestScore && d2 < bestDist2)) {
+                        bestScore = score;
+                        bestDist2 = d2;
+                        bestPoint = proj;
+                    }
+                }
+            }
+        }
+    }
+
+    return bestPoint;
 }

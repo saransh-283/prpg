@@ -7,4 +7,4 @@ set -e
 
 # Configure and build with CMake
 cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=./vcpkg/scripts/buildsystems/vcpkg.cmake
-cmake --build build
+cmake --build build -- -j"$(nproc)"
