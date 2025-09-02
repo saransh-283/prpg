@@ -19,6 +19,8 @@
 #include <ui/minimap/minimap.h>
 // Debug overlay (hidden by default, toggled with tilde/backquote)
 #include <ui/debug/debug_overlay.h>
+// Player entity
+#include <entities/player/player.h>
 
 int main(int argc, char *argv[])
 {
@@ -126,6 +128,11 @@ int main(int argc, char *argv[])
                 }
                 return true;
             }, "GenRoads");
+            // streets generation as a separate task after roads are generated
+            AddLoadingTask([cx, cz](){
+                GenerateStreetsForChunk(cx, cz);
+                return true;
+            }, "GenStreets");
         }
     }
 
@@ -142,11 +149,39 @@ int main(int argc, char *argv[])
     AddLoadingTask([&](){
         // Load simple 3D shader from files
         GLuint program3D_local = 0;
-        bool ok = LoadShaderProgram("src/utils/shaders/simple3d.vert", "src/utils/shaders/simple3d.frag", program3D_local);
+        bool ok = LoadShaderProgram("src/assets/shaders/simple3d/simple3d.vert", "src/assets/shaders/simple3d/simple3d.frag", program3D_local);
         // store program id in a global-like place by setting program3D via pointer in outer scope
         // We'll keep program3D variable and set after tasks finish; for now return ok.
         return ok;
     }, "LoadShaders");
+
+    // Load terrain shader
+    AddLoadingTask([&](){
+        GLuint terrainShader_local = 0;
+        bool ok = LoadShaderProgram("src/assets/shaders/terrain/terrain.vert", "src/assets/shaders/terrain/terrain.frag", terrainShader_local);
+        return ok;
+    }, "LoadTerrainShader");
+
+    // Load roads shader
+    AddLoadingTask([&](){
+        GLuint roadsShader_local = 0;
+        bool ok = LoadShaderProgram("src/assets/shaders/roads/roads.vert", "src/assets/shaders/roads/roads.frag", roadsShader_local);
+        return ok;
+    }, "LoadRoadsShader");
+
+    // Load highways shader
+    AddLoadingTask([&](){
+        GLuint highwaysShader_local = 0;
+        bool ok = LoadShaderProgram("src/assets/shaders/highways/highways.vert", "src/assets/shaders/highways/highways.frag", highwaysShader_local);
+        return ok;
+    }, "LoadHighwaysShader");
+
+    // Load streets shader
+    AddLoadingTask([&](){
+        GLuint streetsShader_local = 0;
+        bool ok = LoadShaderProgram("src/assets/shaders/streets/streets.vert", "src/assets/shaders/streets/streets.frag", streetsShader_local);
+        return ok;
+    }, "LoadStreetsShader");
 
     // Initialize minimap synchronously so its resources are available even if
     // the loader early-exits after finding a spawn from generated roads.
@@ -158,8 +193,12 @@ int main(int argc, char *argv[])
     // A finalization task that does lightweight setup if needed
     AddLoadingTask([](){ return true; }, "FinalizeLoading");
 
-    // We'll hold the shader program variable and attempt to load it again after loading
+    // We'll hold the shader program variables and attempt to load them again after loading
     GLuint program3D = 0;
+    GLuint terrainShader = 0;
+    GLuint roadsShader = 0;
+    GLuint highwaysShader = 0;
+    GLuint streetsShader = 0;
 
     // Run a small loading loop until tasks complete. This keeps the window
     // responsive and draws the loading overlay using the same GL context.
@@ -196,11 +235,35 @@ int main(int argc, char *argv[])
         SDL_Delay(10);
     }
 
-    // Try loading shader program once more and store to program3D
-    if (!LoadShaderProgram("src/utils/shaders/simple3d.vert", "src/utils/shaders/simple3d.frag", program3D))
+    // Try loading shader programs
+    if (!LoadShaderProgram("src/assets/shaders/simple3d/simple3d.vert", "src/assets/shaders/simple3d/simple3d.frag", program3D))
     {
         std::cerr << "Failed to load 3D shader program" << std::endl;
         program3D = 0;
+    }
+
+    if (!LoadShaderProgram("src/assets/shaders/terrain/terrain.vert", "src/assets/shaders/terrain/terrain.frag", terrainShader))
+    {
+        std::cerr << "Failed to load terrain shader program" << std::endl;
+        terrainShader = 0;
+    }
+
+    if (!LoadShaderProgram("src/assets/shaders/roads/roads.vert", "src/assets/shaders/roads/roads.frag", roadsShader))
+    {
+        std::cerr << "Failed to load roads shader program" << std::endl;
+        roadsShader = 0;
+    }
+
+    if (!LoadShaderProgram("src/assets/shaders/highways/highways.vert", "src/assets/shaders/highways/highways.frag", highwaysShader))
+    {
+        std::cerr << "Failed to load highways shader program" << std::endl;
+        highwaysShader = 0;
+    }
+
+    if (!LoadShaderProgram("src/assets/shaders/streets/streets.vert", "src/assets/shaders/streets/streets.frag", streetsShader))
+    {
+        std::cerr << "Failed to load streets shader program" << std::endl;
+        streetsShader = 0;
     }
 
     bool running = true;
@@ -211,29 +274,12 @@ int main(int argc, char *argv[])
 
     // Camera/projection setup
     glm::mat4 proj = glm::perspective(glm::radians(60.0f), (float)windowW / (float)windowH, 0.1f, 100.0f);
-    // Camera state (position, orientation)
-    // Use the initialCameraPos determined by the loading task
-    glm::vec3 cameraPos = initialCameraPos;
-    glm::vec3 cameraFront(0.0f, 0.0f, -1.0f);
-    glm::vec3 cameraUp(0.0f, 1.0f, 0.0f);
-    float yaw = -90.0f; // degrees, -Z
-    float pitch = 0.0f; // degrees
-    const float mouseSensitivity = 0.12f;
-    const float moveSpeed = 2.5f; // units per second
-
-    // Enable relative mouse mode for FPS-like look
-    bool mouseCaptured = true;
-    SDL_SetRelativeMouseMode(SDL_TRUE);
-
-    // Flying mode toggle
-    bool flying = false;
+    
+    // Initialize player
+    Player player;
+    player.Initialize(initialCameraPos);
 
     float angle = 0.0f;
-
-    // Player physics
-    glm::vec3 velocity(0.0f);
-    const float gravity = -9.81f;
-    bool onGround = false;
 
     // Spawn point was computed during loading and cameraPos updated accordingly if available
 
@@ -266,104 +312,23 @@ int main(int argc, char *argv[])
                     wireframeMode = !wireframeMode;
                     SetGlobalWireframeMode(wireframeMode);
                 }
-                // Toggle mouse capture with 'M'
-                if (e.key.keysym.sym == SDLK_m)
-                {
-                    mouseCaptured = !mouseCaptured;
-                    SDL_SetRelativeMouseMode(mouseCaptured ? SDL_TRUE : SDL_FALSE);
-                }
-                // Toggle flying mode with Space
-                if (e.key.keysym.sym == SDLK_SPACE)
-                {
-                    flying = !flying;
-                    if (flying)
-                    {
-                        // stop any falling motion when entering fly
-                        velocity.y = 0.0f;
-                        onGround = false;
-                    }
-                    else
-                    {
-                        // when disabling fly, ensure we're not below ground
-                        float groundY = SampleTerrainHeight(cameraPos.x, cameraPos.z) + 0.5f;
-                        if (cameraPos.y < groundY)
-                            cameraPos.y = groundY;
-                    }
-                }
+                // Let player handle other key presses
+                player.HandleKeyPress(e.key.keysym.sym);
             }
 
             // Mouse motion for looking around
             if (e.type == SDL_MOUSEMOTION)
             {
-                float xrel = (float)e.motion.xrel;
-                float yrel = (float)e.motion.yrel;
-                yaw += xrel * mouseSensitivity;
-                pitch -= yrel * mouseSensitivity; // invert Y
-                if (pitch > 89.0f)
-                    pitch = 89.0f;
-                if (pitch < -89.0f)
-                    pitch = -89.0f;
-                glm::vec3 front;
-                front.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
-                front.y = sin(glm::radians(pitch));
-                front.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
-                cameraFront = glm::normalize(front);
+                player.HandleMouseMotion((float)e.motion.xrel, (float)e.motion.yrel);
             }
         }
 
-    // Continuous keyboard state for movement (WASD) + jump
+        // Update player movement and physics
         const Uint8 *kb = SDL_GetKeyboardState(NULL);
-        if (kb[SDL_SCANCODE_W])
-        {
-            cameraPos += cameraFront * moveSpeed * delta;
-        }
-        if (kb[SDL_SCANCODE_S])
-        {
-            cameraPos -= cameraFront * moveSpeed * delta;
-        }
-        // Right vector
-        glm::vec3 right = glm::normalize(glm::cross(cameraFront, cameraUp));
-        if (kb[SDL_SCANCODE_A])
-        {
-            cameraPos -= right * moveSpeed * delta;
-        }
-        if (kb[SDL_SCANCODE_D])
-        {
-            cameraPos += right * moveSpeed * delta;
-        }
-
-        // Flying vertical control: Up/Down when flying
-        if (flying)
-        {
-            const float flySpeed = 3.0f; // vertical units per second while flying
-            if (kb[SDL_SCANCODE_UP])
-            {
-                cameraPos.y += flySpeed * delta;
-            }
-            if (kb[SDL_SCANCODE_DOWN])
-            {
-                cameraPos.y -= flySpeed * delta;
-            }
-        }
+        player.HandleKeyboard(kb, delta);
+        player.Update(delta);
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        // Apply gravity to player (unless flying)
-        if (!flying)
-        {
-            velocity.y += gravity * delta;
-            cameraPos += velocity * delta;
-
-            // Ensure player stays above terrain
-            float groundY = SampleTerrainHeight(cameraPos.x, cameraPos.z) + 0.5f; // eye offset
-            if (cameraPos.y <= groundY) {
-                cameraPos.y = groundY;
-                velocity.y = 0.0f;
-                onGround = true;
-            } else {
-                onGround = false;
-            }
-        }
 
         // Render 3D shapes
         if (program3D)
@@ -372,7 +337,10 @@ int main(int argc, char *argv[])
 
             angle += delta * 1.0f; // radians per second
 
-            // Update view matrix from camera
+            // Update view matrix from player camera
+            glm::vec3 cameraPos = player.GetPosition();
+            glm::vec3 cameraFront = player.GetFront();
+            glm::vec3 cameraUp = player.GetUp();
             glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
 
             // Update terrain generation around camera
@@ -382,15 +350,15 @@ int main(int argc, char *argv[])
             GLint loc = glGetUniformLocation(program3D, "uMVP");
             GLint colorLoc = glGetUniformLocation(program3D, "uColor");
 
-            // Render terrain (uses same simple3d shader)
-            RenderTerrain(program3D, proj, view);
+            // Render terrain with different shaders for different geometry types
+            RenderTerrain(terrainShader, highwaysShader, roadsShader, streetsShader, proj, view);
 
-            // Render minimap UI
-            RenderMinimap(cameraPos, windowW, windowH, program3D);
+            // Render minimap UI (marker uses program3D, layers use per-type shaders)
+            RenderMinimap(cameraPos, windowW, windowH, program3D, terrainShader, highwaysShader, roadsShader, streetsShader);
         }
 
     // Debug overlay (hidden by default)
-    RenderDebugOverlay(windowW, windowH, wireframeMode, cameraPos);
+    RenderDebugOverlay(windowW, windowH, wireframeMode, player.GetPosition());
 
         SDL_GL_SwapWindow(window);
 

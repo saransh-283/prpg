@@ -6,8 +6,13 @@
 // Initialize minimap resources
 bool InitMinimap();
 
-// Render minimap given camera position, projection and window size
-void RenderMinimap(const glm::vec3& cameraPos, int windowW, int windowH, GLuint shaderProgram);
+// Render minimap given camera position, window size, marker shader and per-layer shaders
+void RenderMinimap(const glm::vec3& cameraPos, int windowW, int windowH,
+				   GLuint markerProgram,
+				   GLuint terrainProgram,
+				   GLuint highwaysProgram,
+				   GLuint roadsProgram,
+				   GLuint streetsProgram);
 
 // Cleanup minimap resources
 void CleanupMinimap();

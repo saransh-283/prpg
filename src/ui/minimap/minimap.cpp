@@ -19,7 +19,12 @@ bool InitMinimap() {
     return true;
 }
 
-void RenderMinimap(const glm::vec3& cameraPos, int windowW, int windowH, GLuint shaderProgram) {
+void RenderMinimap(const glm::vec3& cameraPos, int windowW, int windowH,
+                   GLuint markerProgram,
+                   GLuint terrainProgram,
+                   GLuint highwaysProgram,
+                   GLuint roadsProgram,
+                   GLuint streetsProgram) {
     // Save previous viewport
     GLint oldVp[4];
     glGetIntegerv(GL_VIEWPORT, oldVp);
@@ -48,8 +53,8 @@ void RenderMinimap(const glm::vec3& cameraPos, int windowW, int windowH, GLuint 
 
     glViewport(miniX, miniY, miniSize, miniSize);
 
-    // Render terrain top-down
-    RenderTerrain(shaderProgram, projMini, viewMini);
+    // Render terrain top-down using the specialized per-layer shaders
+    RenderTerrain(terrainProgram, highwaysProgram, roadsProgram, streetsProgram, projMini, viewMini);
 
     // Player marker as small filled square
     float markSize = worldRadius * 0.02f;
@@ -68,10 +73,10 @@ void RenderMinimap(const glm::vec3& cameraPos, int windowW, int windowH, GLuint 
     glBindBuffer(GL_ARRAY_BUFFER, g_miniVBO);
     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(squareVerts), squareVerts);
 
-    // bind shader and set uniform then draw triangles
-    glUseProgram(shaderProgram);
-    GLint loc2 = glGetUniformLocation(shaderProgram, "uMVP");
-    GLint colorLoc2 = glGetUniformLocation(shaderProgram, "uColor");
+    // bind marker shader and set uniform then draw triangles
+    glUseProgram(markerProgram);
+    GLint loc2 = glGetUniformLocation(markerProgram, "uMVP");
+    GLint colorLoc2 = glGetUniformLocation(markerProgram, "uColor");
     glm::mat4 mvpMini = projMini * viewMini * glm::mat4(1.0f);
     glUniformMatrix4fv(loc2, 1, GL_FALSE, glm::value_ptr(mvpMini));
     glUniform3f(colorLoc2, 1.0f, 0.1f, 0.1f);
