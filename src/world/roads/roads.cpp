@@ -147,3 +147,71 @@ glm::vec2 find_nearest_road_point(float x, float z, int search_radius_chunks, in
 
     return bestPoint;
 }
+
+// Grid-based road generation implementing the worm algorithm from the notebook
+std::vector<std::vector<int>> generate_roads_grid(const std::vector<std::vector<int>>& input_grid,
+                                                 int chunk_x, int chunk_y,
+                                                 int chunk_size, int padding,
+                                                 int num_roads, int worm_length,
+                                                 float step_size, float perlin_scale,
+                                                 int seed, int grid_angles,
+                                                 float noise_strength) {
+    // Create a copy of the input grid
+    std::vector<std::vector<int>> result_grid = input_grid;
+    int grid_size = result_grid.size();
+    
+    // Set up world coordinates and noise
+    noise::module::Perlin perlin;
+    perlin.SetSeed(seed);
+    
+    int wx = chunk_x * chunk_size - padding;
+    int wy = chunk_y * chunk_size - padding;
+    int size = chunk_size + 2 * padding;
+    
+    // Choose global grid spacing for deterministic placement
+    int cell_spacing = std::max(16, padding / 2);
+    int gx_min = static_cast<int>(std::floor((double)wx / cell_spacing));
+    int gx_max = static_cast<int>(std::floor((double)(wx + size) / cell_spacing));
+    int gy_min = static_cast<int>(std::floor((double)wy / cell_spacing));
+    int gy_max = static_cast<int>(std::floor((double)(wy + size) / cell_spacing));
+    
+    int count = 0;
+    for (int gx = gx_min; gx <= gx_max && count < num_roads; ++gx) {
+        for (int gy = gy_min; gy <= gy_max && count < num_roads; ++gy) {
+            // Deterministic start position within cell
+            double u = deterministic_unit(gx, gy, seed + 0);
+            double v = deterministic_unit(gx, gy, seed + 1);
+            double start_x = gx * (double)cell_spacing + u * (double)cell_spacing;
+            double start_y = gy * (double)cell_spacing + v * (double)cell_spacing;
+            
+            double x = start_x;
+            double y = start_y;
+            
+            // Generate worm path
+            for (int j = 0; j < worm_length; ++j) {
+                // Convert world coordinates to grid coordinates
+                int grid_x = static_cast<int>((x - wx) * grid_size / size);
+                int grid_y = static_cast<int>((y - wy) * grid_size / size);
+                
+                // Check bounds and mark as road if within grid
+                if (grid_x >= 0 && grid_x < grid_size && grid_y >= 0 && grid_y < grid_size) {
+                    if (result_grid[grid_y][grid_x] == 0) { // Only mark terrain as road
+                        result_grid[grid_y][grid_x] = 2; // Road type
+                    }
+                }
+                
+                // Get next direction from Perlin noise
+                float perlin_val = perlin.GetValue(x * perlin_scale, y * perlin_scale, 0.0f) * noise_strength;
+                float angle = std::round(perlin_val * grid_angles) * (2.0f * M_PI / grid_angles);
+                
+                // Move to next position
+                x += std::cos(angle) * step_size;
+                y += std::sin(angle) * step_size;
+            }
+            
+            count++;
+        }
+    }
+    
+    return result_grid;
+}

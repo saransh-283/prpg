@@ -2,6 +2,15 @@
 
 #include <glm/glm.hpp>
 #include <glad/glad.h>
+#include <vector>
+
+// Road type enumeration matching the notebook
+enum RoadType {
+    TERRAIN = 0,
+    HIGHWAY = 1,
+    ROAD = 2,
+    STREET = 3
+};
 
 // Generate a key for chunk coordinates
 long long keyFor(int cx, int cz);
@@ -24,7 +33,7 @@ float SampleTerrainHeight(float x, float z);
 // Convert a world-space XZ position to chunk coordinates (cx, cz)
 void WorldToChunk(float x, float z, int &out_cx, int &out_cz);
 
-// Generate a single terrain chunk (terrain mesh only) at chunk coords. Returns true on success.
+// Generate a single terrain chunk with complete pipeline (terrain + highways + roads + streets)
 bool GenerateTerrainChunk(int cx, int cz);
 
 // Generate road mesh for a single chunk. Returns true on success.

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <algorithm>
+#include <iostream>
 #include <noise/noise.h>
 #include <glm/glm.hpp>
 
@@ -187,4 +188,117 @@ std::vector<std::vector<glm::vec2>> generate_streets_chunk_polylines(int chunk_x
     }
 
     return street_polylines;
+}
+
+// Grid-based street generation implementing the algorithm from the notebook
+std::vector<std::vector<int>> generate_streets_grid(const std::vector<std::vector<int>>& input_grid,
+                                                   int chunk_x, int chunk_y,
+                                                   int chunk_size, int padding,
+                                                   int num_streets, int worm_length,
+                                                   float step_size, float perlin_scale,
+                                                   int seed, int grid_angles,
+                                                   float noise_strength) {
+    // Create a copy of the input grid
+    std::vector<std::vector<int>> result_grid = input_grid;
+    int grid_size = result_grid.size();
+    
+    // Set up world coordinates and noise
+    noise::module::Perlin perlin;
+    perlin.SetSeed(seed); // Different seed for streets
+    
+    int wx = chunk_x * chunk_size - padding;
+    int wy = chunk_y * chunk_size - padding;
+    int size = chunk_size + 2 * padding;
+    
+    // Find all road pixels (value 2) to start streets from their edges
+    std::vector<std::pair<int, int>> road_pixels;
+    for (int y = 0; y < grid_size; ++y) {
+        for (int x = 0; x < grid_size; ++x) {
+            if (result_grid[y][x] == 2) { // Road pixel
+                road_pixels.push_back({x, y});
+            }
+        }
+    }
+    
+    if (road_pixels.empty()) {
+        return result_grid; // No roads to branch from
+    }
+    
+    // Generate more streets - reduce spacing between street starts
+    int streets_per_road = std::max(1, static_cast<int>(road_pixels.size() / (num_streets * 2))); // Changed from *5 to *2
+    int streets_generated = 0;
+    
+    for (size_t i = 0; i < road_pixels.size() && streets_generated < num_streets; i += streets_per_road) {
+        int grid_x = road_pixels[i].first;
+        int grid_y = road_pixels[i].second;
+        
+        // Convert grid coordinates to world coordinates
+        double start_x = wx + (grid_x * size) / (double)grid_size;
+        double start_y = wy + (grid_y * size) / (double)grid_size;
+        
+        // Estimate road direction by checking neighboring road pixels
+        float road_direction = 0.0f;
+        int direction_count = 0;
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (dx == 0 && dy == 0) continue;
+                int nx = grid_x + dx;
+                int ny = grid_y + dy;
+                if (nx >= 0 && nx < grid_size && ny >= 0 && ny < grid_size) {
+                    if (result_grid[ny][nx] == 2) { // Another road pixel
+                        road_direction += std::atan2(dy, dx);
+                        direction_count++;
+                    }
+                }
+            }
+        }
+        
+        if (direction_count > 0) {
+            road_direction /= direction_count;
+        }
+        
+        // Generate perpendicular direction
+        float street_direction = road_direction + M_PI / 2.0f; // 90 degrees
+        if (deterministic_unit(chunk_x, chunk_y, seed + i) > 0.5) {
+            street_direction -= M_PI; // -90 degrees instead
+        }
+        
+        // Start street NEXT TO the road pixel, not ON it
+        // Move one step in the perpendicular direction from the road
+        double offset_distance = size / (double)grid_size; // One grid cell worth
+        double x = start_x + std::cos(street_direction) * offset_distance;
+        double y = start_y + std::sin(street_direction) * offset_distance;
+        int street_length = worm_length / 3; // Streets are shorter
+        
+        for (int j = 0; j < street_length; ++j) {
+            // Convert world coordinates to grid coordinates
+            int street_grid_x = static_cast<int>((x - wx) * grid_size / size);
+            int street_grid_y = static_cast<int>((y - wy) * grid_size / size);
+            
+            // Check bounds and avoid roads
+            if (street_grid_x >= 0 && street_grid_x < grid_size && 
+                street_grid_y >= 0 && street_grid_y < grid_size) {
+                if (result_grid[street_grid_y][street_grid_x] == 0) { // Only mark terrain as street
+                    result_grid[street_grid_y][street_grid_x] = 3; // Street type
+                } else if (result_grid[street_grid_y][street_grid_x] == 2) {
+                    break; // Stop if we hit another road
+                }
+            } else {
+                break; // Out of bounds
+            }
+            
+            // Add slight noise to direction for more organic streets
+            float noise_influence = 0.3f;
+            float perlin_val = perlin.GetValue(x * perlin_scale * 2, y * perlin_scale * 2, 0.0f) * noise_influence;
+            float angle = street_direction + perlin_val;
+            
+            // Move to next position
+            x += std::cos(angle) * step_size;
+            y += std::sin(angle) * step_size;
+        }
+        
+        streets_generated++;
+    }
+    
+    return result_grid;
 }

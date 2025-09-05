@@ -20,3 +20,12 @@ std::vector<std::vector<glm::vec2>> generate_streets_chunk_polylines(int chunk_x
                                                                      float noise_strength = 1.0f,
                                                                      const std::vector<std::vector<glm::vec2>>& highways = {},
                                                                      const std::vector<std::vector<glm::vec2>>& roads = {});
+
+// Grid-based street generation: takes terrain+highways+roads grid and returns complete grid with streets
+std::vector<std::vector<int>> generate_streets_grid(const std::vector<std::vector<int>>& input_grid,
+                                                   int chunk_x, int chunk_y,
+                                                   int chunk_size = 256, int padding = 64,
+                                                   int num_streets = 100, int worm_length = 400,
+                                                   float step_size = 1.0f, float perlin_scale = 0.01f,
+                                                   int seed = 42, int grid_angles = 4,
+                                                   float noise_strength = 1.0f);

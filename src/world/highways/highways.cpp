@@ -81,3 +81,16 @@ std::vector<std::vector<glm::vec2>> generate_highways_chunk_polylines(int chunk_
 
     return polylines;
 }
+
+// Dummy implementation for grid-based highway generation
+std::vector<std::vector<int>> generate_highways_grid(const std::vector<std::vector<int>>& terrain_grid,
+                                                    int chunk_x, int chunk_y,
+                                                    int chunk_size, int padding,
+                                                    int num_highways, int worm_length,
+                                                    float step_size, float perlin_scale,
+                                                    int seed, int grid_angles,
+                                                    float noise_strength) {
+    // For now, just return the input grid unchanged (no highways)
+    // TODO: Implement actual highway generation logic from notebook
+    return terrain_grid;
+}

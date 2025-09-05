@@ -23,3 +23,12 @@ std::vector<std::vector<glm::vec2>> generate_roads_chunk_polylines(int chunk_x,
 // Returns the world-space (x,z) of the nearest point. If no roads are found,
 // returns the input position.
 glm::vec2 find_nearest_road_point(float x, float z, int search_radius_chunks = 1, int chunk_size = 256);
+
+// Grid-based road generation: takes terrain+highways grid and returns terrain+highways+roads grid
+std::vector<std::vector<int>> generate_roads_grid(const std::vector<std::vector<int>>& input_grid,
+                                                 int chunk_x, int chunk_y,
+                                                 int chunk_size = 256, int padding = 64,
+                                                 int num_roads = 200, int worm_length = 800,
+                                                 float step_size = 1.0f, float perlin_scale = 0.01f,
+                                                 int seed = 42, int grid_angles = 4,
+                                                 float noise_strength = 1.0f);

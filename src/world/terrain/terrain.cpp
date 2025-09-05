@@ -8,6 +8,9 @@
 #include <world/roads/roads.h>
 #include <world/highways/highways.h>
 #include <world/streets/streets.h>
+#include <limits>
+#include <algorithm>
+#include <iostream>
 
 struct Chunk {
     int cx, cz; // chunk coordinates
@@ -32,6 +35,11 @@ struct Chunk {
     std::vector<std::vector<glm::vec2>> highwayPolylines;
     std::vector<std::vector<glm::vec2>> roadPolylines;
     std::vector<std::vector<glm::vec2>> streetPolylines;
+    // Grid data for road types (0=terrain, 1=highway, 2=road, 3=street)
+    std::vector<std::vector<int>> roadGrid;
+    // Terrain vertices for filtering
+    std::vector<float> terrainVertices;
+    std::vector<unsigned int> terrainIndices;
 };
 
 static std::unordered_map<long long, Chunk> g_chunks;
@@ -62,371 +70,155 @@ float SampleTerrainHeight(float x, float z) {
     return sampleHeight(x, z);
 }
 
-static void createChunkMesh(Chunk& c) {
-    // generate grid of g_chunkSize x g_chunkSize vertices
-    std::vector<float> vertices;
-    std::vector<unsigned int> indices;
-    vertices.reserve(g_chunkSize * g_chunkSize * 3);
-    indices.reserve((g_chunkSize - 1) * (g_chunkSize - 1) * 6);
+static void generateHeightmapAndGrid(Chunk& c) {
+    // Generate heightmap and initial grid
+    c.terrainVertices.clear();
+    c.terrainIndices.clear();
+    c.terrainVertices.reserve(g_chunkSize * g_chunkSize * 3);
+    c.terrainIndices.reserve((g_chunkSize - 1) * (g_chunkSize - 1) * 6);
 
+    // Generate terrain vertices
     for (int z = 0; z < g_chunkSize; ++z) {
         for (int x = 0; x < g_chunkSize; ++x) {
             float wx = (c.cx * (g_chunkSize - 1) + x) * g_scale;
             float wz = (c.cz * (g_chunkSize - 1) + z) * g_scale;
             float h = sampleHeight(wx, wz);
-            vertices.push_back(wx);
-            vertices.push_back(h);
-            vertices.push_back(wz);
+            c.terrainVertices.push_back(wx);
+            c.terrainVertices.push_back(h);
+            c.terrainVertices.push_back(wz);
         }
     }
 
+    // Generate terrain indices
     for (int z = 0; z < g_chunkSize - 1; ++z) {
         for (int x = 0; x < g_chunkSize - 1; ++x) {
             int i0 = z * g_chunkSize + x;
             int i1 = i0 + 1;
             int i2 = i0 + g_chunkSize;
             int i3 = i2 + 1;
-            // two triangles
-            indices.push_back(i0);
-            indices.push_back(i2);
-            indices.push_back(i1);
-            indices.push_back(i1);
-            indices.push_back(i2);
-            indices.push_back(i3);
+            // Two triangles
+            c.terrainIndices.push_back(i0);
+            c.terrainIndices.push_back(i2);
+            c.terrainIndices.push_back(i1);
+            c.terrainIndices.push_back(i1);
+            c.terrainIndices.push_back(i2);
+            c.terrainIndices.push_back(i3);
         }
     }
 
-    // create GL buffers
-    glGenVertexArrays(1, &c.VAO);
-    glGenBuffers(1, &c.VBO);
-    glGenBuffers(1, &c.EBO);
-    glBindVertexArray(c.VAO);
-    glBindBuffer(GL_ARRAY_BUFFER, c.VBO);
-    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, c.EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
-    // position attrib
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glBindVertexArray(0);
+    // Initialize grid (same size as terrain) with all 0s (terrain)
+    int grid_size = g_chunkSize;
+    c.roadGrid.assign(grid_size, std::vector<int>(grid_size, 0));
+}
 
-    c.indexCount = (int)indices.size();
+static void generateGridBasedRoads(Chunk& c) {
+    // Grid-based road generation pipeline
+    int chunk_size = g_chunkSize;
+    int padding = 8;
+    int seed = 42;
 
-    // generate roads for this chunk using roads module (polylines in world XZ)
-    int padding = 8; // keep small padding for roads
-    auto polylines = generate_roads_chunk_polylines(c.cx, c.cz, g_chunkSize *  (int)g_scale, padding, 64, 200, 1.0f, 0.02f, 1337, 4, 1.0f);
-    // build simple ribbon mesh for roads: two vertices per poly point offset along tangent
-    std::vector<float> roadVerts;
-    std::vector<unsigned int> roadIdx;
-    int baseVert = 0;
-    float halfWidth = 0.5f; // world units
-    for (auto &poly : polylines) {
-        if (poly.size() < 2) continue;
-        // build vertices
-        for (size_t i = 0; i < poly.size(); ++i) {
-            glm::vec2 p = poly[i];
-            // compute tangent
-            glm::vec2 t;
-            if (i + 1 < poly.size()) t = glm::normalize(poly[i+1] - p);
-            else t = glm::normalize(p - poly[i-1]);
-            glm::vec2 n = glm::vec2(-t.y, t.x);
-            glm::vec2 left = p + n * halfWidth;
-            glm::vec2 right = p - n * halfWidth;
-            float hy = sampleHeight(left.x, left.y);
-            float ry = sampleHeight(right.x, right.y);
-            // left vertex
-            roadVerts.push_back(left.x);
-            roadVerts.push_back(hy + 0.01f); // slight offset to avoid z-fighting
-            roadVerts.push_back(left.y);
-            // right vertex
-            roadVerts.push_back(right.x);
-            roadVerts.push_back(ry + 0.01f);
-            roadVerts.push_back(right.y);
+    // Stage 1: Generate highways (dummy for now)
+    c.roadGrid = generate_highways_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding, 2, 1000, 1.0f, 0.01f, seed, 4, 1.0f);
+    
+    // Stage 2: Generate roads
+    c.roadGrid = generate_roads_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding, 200, 800, 1.0f, 0.01f, seed, 4, 1.0f);
+    
+    // Stage 3: Generate streets
+    c.roadGrid = generate_streets_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding, 100, 400, 1.0f, 0.01f, seed, 4, 1.0f);
+}
+
+static void createMeshFromGrid(Chunk& c, int roadType, GLuint& VAO, GLuint& VBO, GLuint& EBO, int& indexCount) {
+    std::vector<float> vertices;
+    std::vector<unsigned int> indices;
+    
+    // Find triangles that belong to this road type
+    for (int z = 0; z < g_chunkSize - 1; ++z) {
+        for (int x = 0; x < g_chunkSize - 1; ++x) {
+            // Check if any corner of this quad has the matching road type
+            bool hasRoadType = false;
+            if (c.roadGrid[z][x] == roadType || 
+                c.roadGrid[z][x+1] == roadType ||
+                c.roadGrid[z+1][x] == roadType ||
+                c.roadGrid[z+1][x+1] == roadType) {
+                hasRoadType = true;
+            }
+            
+            if (hasRoadType) {
+                // Add the two triangles for this quad
+                int baseIdx = vertices.size() / 3;
+                
+                // Add 4 vertices for this quad
+                for (int dz = 0; dz <= 1; ++dz) {
+                    for (int dx = 0; dx <= 1; ++dx) {
+                        int vertIdx = (z + dz) * g_chunkSize + (x + dx);
+                        vertices.push_back(c.terrainVertices[vertIdx * 3]);     // x
+                        vertices.push_back(c.terrainVertices[vertIdx * 3 + 1] + 0.01f * roadType); // y (slight offset)
+                        vertices.push_back(c.terrainVertices[vertIdx * 3 + 2]); // z
+                    }
+                }
+                
+                // Add indices for two triangles
+                indices.push_back(baseIdx + 0); // z, x
+                indices.push_back(baseIdx + 2); // z+1, x
+                indices.push_back(baseIdx + 1); // z, x+1
+                indices.push_back(baseIdx + 1); // z, x+1
+                indices.push_back(baseIdx + 2); // z+1, x
+                indices.push_back(baseIdx + 3); // z+1, x+1
+            }
         }
-        // indices
-        int pts = (int)poly.size();
-        for (int i = 0; i < pts - 1; ++i) {
-            int a = baseVert + i * 2;
-            int b = baseVert + i * 2 + 1;
-            int c2 = baseVert + (i+1) * 2;
-            int d = baseVert + (i+1) * 2 + 1;
-            // two tris (a,c,b) and (b,c,d) but ensure winding
-            roadIdx.push_back(a);
-            roadIdx.push_back(c2);
-            roadIdx.push_back(b);
-            roadIdx.push_back(b);
-            roadIdx.push_back(c2);
-            roadIdx.push_back(d);
-        }
-        baseVert += pts * 2;
     }
-
-    if (!roadVerts.empty()) {
-        glGenVertexArrays(1, &c.roadVAO);
-        glGenBuffers(1, &c.roadVBO);
-        glGenBuffers(1, &c.roadEBO);
-        glBindVertexArray(c.roadVAO);
-        glBindBuffer(GL_ARRAY_BUFFER, c.roadVBO);
-        glBufferData(GL_ARRAY_BUFFER, roadVerts.size() * sizeof(float), roadVerts.data(), GL_STATIC_DRAW);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, c.roadEBO);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, roadIdx.size() * sizeof(unsigned int), roadIdx.data(), GL_STATIC_DRAW);
+    
+    if (!vertices.empty()) {
+        glGenVertexArrays(1, &VAO);
+        glGenBuffers(1, &VBO);
+        glGenBuffers(1, &EBO);
+        glBindVertexArray(VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
         glBindVertexArray(0);
-        c.roadIndexCount = (int)roadIdx.size();
+        indexCount = indices.size();
+    } else {
+        indexCount = 0;
     }
 }
 
-// Public API: generate terrain chunk (terrain mesh only)
+static void createChunkMesh(Chunk& c) {
+    // Generate heightmap and initial grid
+    generateHeightmapAndGrid(c);
+    
+    // Generate grid-based roads
+    generateGridBasedRoads(c);
+    
+    // Create meshes for each road type
+    createMeshFromGrid(c, TERRAIN, c.VAO, c.VBO, c.EBO, c.indexCount);
+    createMeshFromGrid(c, HIGHWAY, c.highwayVAO, c.highwayVBO, c.highwayEBO, c.highwayIndexCount);
+    createMeshFromGrid(c, ROAD, c.roadVAO, c.roadVBO, c.roadEBO, c.roadIndexCount);
+    createMeshFromGrid(c, STREET, c.streetVAO, c.streetVBO, c.streetEBO, c.streetIndexCount);
+}
+
+// Public API: generate terrain chunk with complete pipeline
 bool GenerateTerrainChunk(int cx, int cz) {
     long long k = keyFor(cx, cz);
     if (g_chunks.find(k) != g_chunks.end()) return true; // already present
     Chunk c;
     c.cx = cx; c.cz = cz;
     createChunkMesh(c);
-    // store without road generation (roads are created separately via GenerateRoadsForChunk)
     g_chunks[k] = c;
     return true;
 }
 
 bool GenerateRoadsForChunk(int cx, int cz) {
-    long long k = keyFor(cx, cz);
-    if (g_chunks.find(k) == g_chunks.end()) {
-        Chunk c;
-        c.cx = cx; c.cz = cz;
-        createChunkMesh(c);
-        g_chunks[k] = c;
-    }
-    Chunk &c = g_chunks[k];
-
-    // Generate hierarchical road system: highways and roads first
-    int padding = 8;
-    int chunk_size = g_chunkSize * (int)g_scale;
-
-    // Generate highways first
-    auto highways = generate_highways_chunk_polylines(cx, cz, chunk_size, padding,
-                                                       2, 1000, 1.0f, 0.01f, 42, 4, 1.0f);
-
-    // Generate roads
-    auto roads = generate_roads_chunk_polylines(cx, cz, chunk_size, padding,
-                                                 200, 800, 1.0f, 0.01f, 42, 4, 1.0f);
-
-    // Combine highways and roads for storage and initial rendering
-    std::vector<std::vector<glm::vec2>> highways_and_roads;
-    highways_and_roads.reserve(highways.size() + roads.size());
-    highways_and_roads.insert(highways_and_roads.end(), highways.begin(), highways.end());
-    highways_and_roads.insert(highways_and_roads.end(), roads.begin(), roads.end());
-
-    // Store polylines separately for different road types
-    c.highwayPolylines = std::move(highways);
-    c.roadPolylines = std::move(roads);
-
-    // Build highway geometry for rendering
-    std::vector<float> highwayVerts;
-    std::vector<unsigned int> highwayIdx;
-    int highwayBaseVert = 0;
-    float halfWidth = 0.5f;
-
-    for (auto &poly : c.highwayPolylines) {
-        if (poly.size() < 2) continue;
-        for (size_t i = 0; i < poly.size(); ++i) {
-            glm::vec2 p = poly[i];
-            glm::vec2 t;
-            if (i + 1 < poly.size()) t = glm::normalize(poly[i+1] - p);
-            else t = glm::normalize(p - poly[i-1]);
-            glm::vec2 n = glm::vec2(-t.y, t.x);
-            glm::vec2 left = p + n * halfWidth;
-            glm::vec2 right = p - n * halfWidth;
-            float hy = sampleHeight(left.x, left.y);
-            float ry = sampleHeight(right.x, right.y);
-            highwayVerts.push_back(left.x);
-            highwayVerts.push_back(hy + 0.01f);
-            highwayVerts.push_back(left.y);
-            highwayVerts.push_back(right.x);
-            highwayVerts.push_back(ry + 0.01f);
-            highwayVerts.push_back(right.y);
-        }
-        int pts = (int)poly.size();
-        for (int i = 0; i < pts - 1; ++i) {
-            int a = highwayBaseVert + i * 2;
-            int b = highwayBaseVert + i * 2 + 1;
-            int c2 = highwayBaseVert + (i+1) * 2;
-            int d = highwayBaseVert + (i+1) * 2 + 1;
-            highwayIdx.push_back(a);
-            highwayIdx.push_back(c2);
-            highwayIdx.push_back(b);
-            highwayIdx.push_back(b);
-            highwayIdx.push_back(c2);
-            highwayIdx.push_back(d);
-        }
-        highwayBaseVert += pts * 2;
-    }
-
-    if (!highwayVerts.empty()) {
-        if (c.highwayVAO) {
-            glDeleteVertexArrays(1, &c.highwayVAO);
-            glDeleteBuffers(1, &c.highwayVBO);
-            glDeleteBuffers(1, &c.highwayEBO);
-        }
-        glGenVertexArrays(1, &c.highwayVAO);
-        glGenBuffers(1, &c.highwayVBO);
-        glGenBuffers(1, &c.highwayEBO);
-        glBindVertexArray(c.highwayVAO);
-        glBindBuffer(GL_ARRAY_BUFFER, c.highwayVBO);
-        glBufferData(GL_ARRAY_BUFFER, highwayVerts.size() * sizeof(float), highwayVerts.data(), GL_STATIC_DRAW);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, c.highwayEBO);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, highwayIdx.size() * sizeof(unsigned int), highwayIdx.data(), GL_STATIC_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-        c.highwayIndexCount = highwayIdx.size();
-    } else {
-        c.highwayIndexCount = 0;
-    }
-
-    // Build road geometry for rendering
-    std::vector<float> roadVerts;
-    std::vector<unsigned int> roadIdx;
-    int roadBaseVert = 0;
-
-    for (auto &poly : c.roadPolylines) {
-        if (poly.size() < 2) continue;
-        for (size_t i = 0; i < poly.size(); ++i) {
-            glm::vec2 p = poly[i];
-            glm::vec2 t;
-            if (i + 1 < poly.size()) t = glm::normalize(poly[i+1] - p);
-            else t = glm::normalize(p - poly[i-1]);
-            glm::vec2 n = glm::vec2(-t.y, t.x);
-            glm::vec2 left = p + n * halfWidth;
-            glm::vec2 right = p - n * halfWidth;
-            float hy = sampleHeight(left.x, left.y);
-            float ry = sampleHeight(right.x, right.y);
-            roadVerts.push_back(left.x);
-            roadVerts.push_back(hy + 0.01f);
-            roadVerts.push_back(left.y);
-            roadVerts.push_back(right.x);
-            roadVerts.push_back(ry + 0.01f);
-            roadVerts.push_back(right.y);
-        }
-        int pts = (int)poly.size();
-        for (int i = 0; i < pts - 1; ++i) {
-            int a = roadBaseVert + i * 2;
-            int b = roadBaseVert + i * 2 + 1;
-            int c2 = roadBaseVert + (i+1) * 2;
-            int d = roadBaseVert + (i+1) * 2 + 1;
-            roadIdx.push_back(a);
-            roadIdx.push_back(c2);
-            roadIdx.push_back(b);
-            roadIdx.push_back(b);
-            roadIdx.push_back(c2);
-            roadIdx.push_back(d);
-        }
-        roadBaseVert += pts * 2;
-    }
-
-    if (!roadVerts.empty()) {
-        if (c.roadVAO) {
-            glDeleteVertexArrays(1, &c.roadVAO);
-            glDeleteBuffers(1, &c.roadVBO);
-            glDeleteBuffers(1, &c.roadEBO);
-        }
-        glGenVertexArrays(1, &c.roadVAO);
-        glGenBuffers(1, &c.roadVBO);
-        glGenBuffers(1, &c.roadEBO);
-        glBindVertexArray(c.roadVAO);
-        glBindBuffer(GL_ARRAY_BUFFER, c.roadVBO);
-        glBufferData(GL_ARRAY_BUFFER, roadVerts.size() * sizeof(float), roadVerts.data(), GL_STATIC_DRAW);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, c.roadEBO);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, roadIdx.size() * sizeof(unsigned int), roadIdx.data(), GL_STATIC_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-        c.roadIndexCount = roadIdx.size();
-    } else {
-        c.roadIndexCount = 0;
-    }
-
-    return true;
+    // Roads are now generated as part of the main terrain generation pipeline
+    return GenerateTerrainChunk(cx, cz);
 }
 
 void GenerateStreetsForChunk(int cx, int cz) {
-    long long k = keyFor(cx, cz);
-    if (g_chunks.find(k) == g_chunks.end()) {
-        // If chunk doesn't exist, generate roads first
-        GenerateRoadsForChunk(cx, cz);
-    }
-    Chunk &c = g_chunks[k];
-
-    int padding = 8;
-    int chunk_size = g_chunkSize * (int)g_scale;
-
-    // Generate streets that branch from highways and roads
-    auto streets = generate_streets_chunk_polylines(cx, cz, chunk_size, padding,
-                                                     300, 400, 1.0f, 0.01f, 42, 4, 1.0f,
-                                                     c.highwayPolylines, c.roadPolylines);
-
-    // Store streets polylines
-    c.streetPolylines = std::move(streets);
-
-    // Build street geometry for rendering
-    std::vector<float> streetVerts;
-    std::vector<unsigned int> streetIdx;
-    int streetBaseVert = 0;
-    float halfWidth = 0.3f; // Streets are narrower than highways/roads
-
-    for (auto &poly : c.streetPolylines) {
-        if (poly.size() < 2) continue;
-        for (size_t i = 0; i < poly.size(); ++i) {
-            glm::vec2 p = poly[i];
-            glm::vec2 t;
-            if (i + 1 < poly.size()) t = glm::normalize(poly[i+1] - p);
-            else t = glm::normalize(p - poly[i-1]);
-            glm::vec2 n = glm::vec2(-t.y, t.x);
-            glm::vec2 left = p + n * halfWidth;
-            glm::vec2 right = p - n * halfWidth;
-            float hy = sampleHeight(left.x, left.y);
-            float ry = sampleHeight(right.x, right.y);
-            streetVerts.push_back(left.x);
-            streetVerts.push_back(hy + 0.01f);
-            streetVerts.push_back(left.y);
-            streetVerts.push_back(right.x);
-            streetVerts.push_back(ry + 0.01f);
-            streetVerts.push_back(right.y);
-        }
-        int pts = (int)poly.size();
-        for (int i = 0; i < pts - 1; ++i) {
-            int a = streetBaseVert + i * 2;
-            int b = streetBaseVert + i * 2 + 1;
-            int c2 = streetBaseVert + (i+1) * 2;
-            int d = streetBaseVert + (i+1) * 2 + 1;
-            streetIdx.push_back(a);
-            streetIdx.push_back(c2);
-            streetIdx.push_back(b);
-            streetIdx.push_back(b);
-            streetIdx.push_back(c2);
-            streetIdx.push_back(d);
-        }
-        streetBaseVert += pts * 2;
-    }
-
-    if (!streetVerts.empty()) {
-        if (c.streetVAO) {
-            glDeleteVertexArrays(1, &c.streetVAO);
-            glDeleteBuffers(1, &c.streetVBO);
-            glDeleteBuffers(1, &c.streetEBO);
-        }
-        glGenVertexArrays(1, &c.streetVAO);
-        glGenBuffers(1, &c.streetVBO);
-        glGenBuffers(1, &c.streetEBO);
-        glBindVertexArray(c.streetVAO);
-        glBindBuffer(GL_ARRAY_BUFFER, c.streetVBO);
-        glBufferData(GL_ARRAY_BUFFER, streetVerts.size() * sizeof(float), streetVerts.data(), GL_STATIC_DRAW);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, c.streetEBO);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, streetIdx.size() * sizeof(unsigned int), streetIdx.data(), GL_STATIC_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-        c.streetIndexCount = streetIdx.size();
-    } else {
-        c.streetIndexCount = 0;
-    }
+    // Streets are now generated as part of the main terrain generation pipeline
+    GenerateTerrainChunk(cx, cz);
 }
 bool DetermineSpawnFromGenerated(float x, float z, glm::vec2 &out_point, int search_radius_chunks) {
     // compute chunk containing point
@@ -579,7 +371,7 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(highwaysProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(highwaysProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, 0.0f, 0.0f, 0.0f); // Black highways
+            glUniform3f(colorLoc, 0.6f, 0.6f, 0.6f); // Gray for highways (matching notebook)
             glBindVertexArray(c.highwayVAO);
             glDrawElements(GL_TRIANGLES, c.highwayIndexCount, GL_UNSIGNED_INT, 0);
         }
@@ -590,7 +382,7 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(roadsProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(roadsProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, 0.2f, 0.2f, 0.2f); // Dark gray roads
+            glUniform3f(colorLoc, 0.8f, 0.8f, 0.6f); // Light beige for roads (matching notebook)
             glBindVertexArray(c.roadVAO);
             glDrawElements(GL_TRIANGLES, c.roadIndexCount, GL_UNSIGNED_INT, 0);
         }
@@ -601,7 +393,7 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(streetsProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(streetsProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, 0.4f, 0.4f, 0.4f); // Light gray streets
+            glUniform3f(colorLoc, 0.4f, 0.4f, 0.4f); // Dark gray for streets (matching notebook)
             glBindVertexArray(c.streetVAO);
             glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
         }
