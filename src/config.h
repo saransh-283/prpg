@@ -23,7 +23,7 @@ namespace Window {
 // ============================================================================
 namespace World {
     constexpr int INITIAL_VIEW_RADIUS = 3;   // Number of chunks to generate initially around spawn
-    constexpr int CHUNK_SIZE = 32;           // Number of vertices per chunk side
+    constexpr int CHUNK_SIZE = 256;           // Number of vertices per chunk side
     constexpr float VERTEX_SPACING = 1.5f;   // World units between terrain vertices (larger = more planar terrain)
     constexpr int VIEW_RADIUS = 3;           // Chunks to keep loaded around player
     constexpr int PERLIN_SEED = 1337;        // Seed for terrain height noise generator
@@ -101,6 +101,31 @@ namespace Player {
     constexpr float MOVE_SPEED = 2.5f;          // Player movement speed in units per second
     constexpr float FLY_SPEED = 3.0f;           // Vertical movement speed when flying (units/sec)
     constexpr float GRAVITY = -9.81f;           // Gravity acceleration (m/s²)
+}
+
+// ============================================================================
+// Rendering Colors (RGB values 0.0-1.0)
+// ============================================================================
+namespace Colors {
+    // Terrain color
+    constexpr float TERRAIN_R = 0.3f;        // Terrain red component
+    constexpr float TERRAIN_G = 0.8f;        // Terrain green component (green grass)
+    constexpr float TERRAIN_B = 0.3f;        // Terrain blue component
+    
+    // Highway color
+    constexpr float HIGHWAY_R = 0.6f;        // Highway red component
+    constexpr float HIGHWAY_G = 0.6f;        // Highway green component (gray)
+    constexpr float HIGHWAY_B = 0.6f;        // Highway blue component
+    
+    // Road color
+    constexpr float ROAD_R = 0.8f;           // Road red component
+    constexpr float ROAD_G = 0.8f;           // Road green component (light beige)
+    constexpr float ROAD_B = 0.6f;           // Road blue component
+    
+    // Street color
+    constexpr float STREET_R = 0.4f;         // Street red component
+    constexpr float STREET_G = 0.4f;         // Street green component (dark gray)
+    constexpr float STREET_B = 0.4f;         // Street blue component
 }
 
 // ============================================================================

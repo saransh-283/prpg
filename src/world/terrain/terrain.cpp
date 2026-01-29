@@ -227,7 +227,9 @@ void GenerateStreetsForChunk(int cx, int cz) {
     // Streets are now generated as part of the main terrain generation pipeline
     GenerateTerrainChunk(cx, cz);
 }
-bool DetermineSpawnFromGenerated(float x, float z, glm::vec2 &out_point, int search_radius_chunks) {
+// Determine spawn point using already-generated chunk data (avoid regenerating roads)
+// Returns the best spawn point found, or the input position if no roads exist
+glm::vec2 DetermineSpawnPoint(float x, float z, int search_radius_chunks) {
     // compute chunk containing point
     int cx = static_cast<int>(std::floor(x / ((g_chunkSize - 1) * g_scale)));
     int cz = static_cast<int>(std::floor(z / ((g_chunkSize - 1) * g_scale)));
@@ -283,16 +285,7 @@ bool DetermineSpawnFromGenerated(float x, float z, glm::vec2 &out_point, int sea
         }
     }
 
-    if (bestScore > 0 || bestDist2 < std::numeric_limits<float>::infinity()) {
-        out_point = bestPoint;
-        return true;
-    }
-    return false;
-}
-
-// Determine spawn point using existing road search helper
-glm::vec2 DetermineSpawnPoint(float x, float z, int search_radius_chunks) {
-    return find_nearest_road_point(x, z, search_radius_chunks, g_chunkSize * (int)g_scale);
+    return bestPoint;
 }
 
 static void destroyChunk(Chunk& c) {
@@ -367,7 +360,7 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(terrainProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(terrainProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, 0.3f, 0.8f, 0.3f); // Green terrain
+            glUniform3f(colorLoc, Config::Colors::TERRAIN_R, Config::Colors::TERRAIN_G, Config::Colors::TERRAIN_B);
             glBindVertexArray(c.VAO);
             glDrawElements(GL_TRIANGLES, c.indexCount, GL_UNSIGNED_INT, 0);
         }
@@ -378,7 +371,7 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(highwaysProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(highwaysProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, 0.6f, 0.6f, 0.6f); // Gray for highways (matching notebook)
+            glUniform3f(colorLoc, Config::Colors::HIGHWAY_R, Config::Colors::HIGHWAY_G, Config::Colors::HIGHWAY_B);
             glBindVertexArray(c.highwayVAO);
             glDrawElements(GL_TRIANGLES, c.highwayIndexCount, GL_UNSIGNED_INT, 0);
         }
@@ -389,7 +382,7 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(roadsProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(roadsProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, 0.8f, 0.8f, 0.6f); // Light beige for roads (matching notebook)
+            glUniform3f(colorLoc, Config::Colors::ROAD_R, Config::Colors::ROAD_G, Config::Colors::ROAD_B);
             glBindVertexArray(c.roadVAO);
             glDrawElements(GL_TRIANGLES, c.roadIndexCount, GL_UNSIGNED_INT, 0);
         }
@@ -400,7 +393,7 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(streetsProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(streetsProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, 0.4f, 0.4f, 0.4f); // Dark gray for streets (matching notebook)
+            glUniform3f(colorLoc, Config::Colors::STREET_R, Config::Colors::STREET_G, Config::Colors::STREET_B);
             glBindVertexArray(c.streetVAO);
             glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
         }

@@ -118,10 +118,10 @@ int main(int argc, char *argv[])
             AddLoadingTask([cx, cz, &initialCameraPos](){
                 bool ok = GenerateRoadsForChunk(cx, cz);
                 if (!ok) return false;
-                glm::vec2 candidate;
-                // search only among generated chunks so far
-                if (DetermineSpawnFromGenerated(initialCameraPos.x, initialCameraPos.z, candidate, 2)) {
-                    // if found, update initialCameraPos and cancel remaining tasks
+                // Check if we can determine a spawn from already-generated data
+                glm::vec2 candidate = DetermineSpawnPoint(initialCameraPos.x, initialCameraPos.z, 2);
+                // If we found a good spawn (not just the fallback position), use it and skip remaining chunks
+                if (glm::length(candidate - glm::vec2(initialCameraPos.x, initialCameraPos.z)) > 0.1f) {
                     initialCameraPos.x = candidate.x;
                     initialCameraPos.z = candidate.y;
                     initialCameraPos.y = SampleTerrainHeight(candidate.x, candidate.y) + 0.5f;
