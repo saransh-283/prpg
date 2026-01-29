@@ -139,11 +139,32 @@ namespace UI {
         constexpr float LINE_HEIGHT = 30.0f; // Height of each debug text line
     }
     
-    // Minimap
-    namespace Minimap {
-        constexpr int SIZE = 220;            // Minimap width/height in pixels
+    // Map (both corner minimap and full-screen map)
+    namespace Map {
+        constexpr int SIZE = 220;            // Small map view width/height in pixels
         constexpr int MARGIN = 10;           // Distance from screen edge in pixels
-        constexpr float WORLD_RADIUS = 40.0f;// World units visible on minimap
+        constexpr float WORLD_RADIUS = 40.0f;// World units visible in small map view
+        
+        // Full-screen map settings
+        constexpr float MAP_WORLD_RADIUS_MULTIPLIER = 3.0f; // How much larger the full map view is vs small corner view
+        constexpr float MAP_SCROLL_SPEED = 50.0f;           // World units per second when scrolling map with WASD
+        
+        // Zoom settings
+        constexpr float ZOOM_DEFAULT = 1.0f;     // Default zoom level
+        constexpr float ZOOM_MIN = 0.5f;         // Minimum zoom (most zoomed out)
+        constexpr float ZOOM_MAX = 5.0f;         // Maximum zoom (most zoomed in)
+        constexpr float ZOOM_STEP = 0.2f;        // Zoom increment/decrement per keypress
+        
+        // Camera and rendering settings
+        constexpr float CAMERA_HEIGHT = 200.0f;  // Height of top-down camera above terrain
+        constexpr float MARKER_SIZE_RATIO = 0.02f; // Player marker size as ratio of world radius
+        constexpr float MARKER_HEIGHT_OFFSET = 50.0f; // Height offset for player marker above terrain
+        constexpr float CHUNK_BORDER_HEIGHT = 100.0f; // Height for chunk border lines
+        
+        // Colors (RGB, 0.0-1.0)
+        constexpr float CHUNK_BORDER_R = 0.5f;   // Chunk border red component
+        constexpr float CHUNK_BORDER_G = 0.5f;   // Chunk border green component
+        constexpr float CHUNK_BORDER_B = 0.5f;   // Chunk border blue component
     }
 }
 

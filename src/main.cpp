@@ -16,8 +16,8 @@
 #include <utils/triangulate/mesh.h>
 // Infinite terrain
 #include <world/terrain/terrain.h>
-// Minimap UI
-#include <ui/minimap/minimap.h>
+// Map UI
+#include <ui/map/map.h>
 // Debug overlay (hidden by default, toggled with tilde/backquote)
 #include <ui/debug/debug_overlay.h>
 // Player entity
@@ -184,10 +184,10 @@ int main(int argc, char *argv[])
         return ok;
     }, "LoadStreetsShader");
 
-    // Initialize minimap synchronously so its resources are available even if
+    // Initialize map synchronously so its resources are available even if
     // the loader early-exits after finding a spawn from generated roads.
-    if (!InitMinimap()) {
-        std::cerr << "Failed to initialize minimap" << std::endl;
+    if (!InitMap()) {
+        std::cerr << "Failed to initialize map" << std::endl;
     }
     AddLoadingTask([](){ InitDebugOverlay(); return true; }, "InitDebugOverlay");
 
@@ -302,6 +302,21 @@ int main(int argc, char *argv[])
             {
                 if (e.key.keysym.sym == SDLK_ESCAPE)
                     running = false;
+                // Toggle map with 'M' key
+                if (e.key.keysym.sym == SDLK_m)
+                {
+                    ToggleMap();
+                }
+                // Zoom in with numpad + or KP_PLUS
+                if (e.key.keysym.sym == SDLK_KP_PLUS)
+                {
+                    ZoomMap(Config::UI::Map::ZOOM_STEP);
+                }
+                // Zoom out with numpad - or KP_MINUS
+                if (e.key.keysym.sym == SDLK_KP_MINUS)
+                {
+                    ZoomMap(-Config::UI::Map::ZOOM_STEP);
+                }
                 // Toggle debug overlay with tilde/backquote key (`/~)
                 if (e.key.keysym.sym == SDLK_BACKQUOTE)
                 {
@@ -326,7 +341,20 @@ int main(int argc, char *argv[])
 
         // Update player movement and physics
         const Uint8 *kb = SDL_GetKeyboardState(NULL);
-        player.HandleKeyboard(kb, delta);
+        
+        // Handle map scrolling when map is visible
+        if (IsMapVisible()) {
+            glm::vec2 scrollDelta(0.0f, 0.0f);
+            if (kb[SDL_SCANCODE_W]) scrollDelta.y -= Config::UI::Map::MAP_SCROLL_SPEED * delta;
+            if (kb[SDL_SCANCODE_S]) scrollDelta.y += Config::UI::Map::MAP_SCROLL_SPEED * delta;
+            if (kb[SDL_SCANCODE_A]) scrollDelta.x -= Config::UI::Map::MAP_SCROLL_SPEED * delta;
+            if (kb[SDL_SCANCODE_D]) scrollDelta.x += Config::UI::Map::MAP_SCROLL_SPEED * delta;
+            UpdateMapOffset(scrollDelta);
+        } else {
+            // Normal player movement when map is not visible
+            player.HandleKeyboard(kb, delta);
+        }
+        
         player.Update(delta);
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -354,8 +382,17 @@ int main(int argc, char *argv[])
             // Render terrain with different shaders for different geometry types
             RenderTerrain(terrainShader, highwaysShader, roadsShader, streetsShader, proj, view);
 
-            // Render minimap UI (marker uses program3D, layers use per-type shaders)
-            RenderMinimap(cameraPos, windowW, windowH, program3D, terrainShader, highwaysShader, roadsShader, streetsShader);
+            // Render map UI - either full screen or corner minimap (marker uses program3D, layers use per-type shaders)
+            // When map is visible, show full screen map with current offset, otherwise show small corner view
+            if (IsMapVisible()) {
+                // Get current map offset for scrolling
+                glm::vec2 mapOffset(0.0f, 0.0f);
+                // We need to track the offset, so we'll pass it through the state
+                // The offset is already tracked internally in map.cpp
+                RenderMap(cameraPos, windowW, windowH, program3D, terrainShader, highwaysShader, roadsShader, streetsShader, true, glm::vec2(0.0f));
+            } else {
+                RenderMap(cameraPos, windowW, windowH, program3D, terrainShader, highwaysShader, roadsShader, streetsShader, false, glm::vec2(0.0f));
+            }
         }
 
     // Debug overlay (hidden by default)
@@ -374,8 +411,8 @@ int main(int argc, char *argv[])
 
     CleanupTerrain();
 
-    // Cleanup minimap
-    CleanupMinimap();
+    // Cleanup map
+    CleanupMap();
 
     SDL_GL_DeleteContext(glContext);
     SDL_DestroyWindow(window);
