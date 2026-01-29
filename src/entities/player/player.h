@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../config.h"
 #include <glm/glm.hpp>
 #include <SDL2/SDL.h>
 
@@ -55,10 +56,10 @@ private:
     bool mouseCaptured;
     
     // Movement parameters
-    static constexpr float mouseSensitivity = 0.12f;
-    static constexpr float moveSpeed = 2.5f; // units per second
-    static constexpr float flySpeed = 3.0f;  // vertical units per second while flying
-    static constexpr float gravity = -9.81f;
+    static constexpr float mouseSensitivity = Config::Player::MOUSE_SENSITIVITY;
+    static constexpr float moveSpeed = Config::Player::MOVE_SPEED; // units per second
+    static constexpr float flySpeed = Config::Player::FLY_SPEED;  // vertical units per second while flying
+    static constexpr float gravity = Config::Player::GRAVITY;
     
     // Helper methods
     void UpdateCameraFront();

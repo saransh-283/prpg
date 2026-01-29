@@ -1,4 +1,5 @@
 #include "minimap.h"
+#include "../../config.h"
 #include <glad/glad.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -29,8 +30,8 @@ void RenderMinimap(const glm::vec3& cameraPos, int windowW, int windowH,
     GLint oldVp[4];
     glGetIntegerv(GL_VIEWPORT, oldVp);
 
-    const int miniSize = 220;
-    const int margin = 10;
+    const int miniSize = Config::UI::Minimap::SIZE;
+    const int margin = Config::UI::Minimap::MARGIN;
     int miniX = windowW - miniSize - margin;
     int miniY = windowH - miniSize - margin;
 
@@ -41,7 +42,7 @@ void RenderMinimap(const glm::vec3& cameraPos, int windowW, int windowH,
     glClearColor(0.06f, 0.06f, 0.07f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    const float worldRadius = 40.0f;
+    const float worldRadius = Config::UI::Minimap::WORLD_RADIUS;
     float cx = cameraPos.x;
     float cz = cameraPos.z;
 

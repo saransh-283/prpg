@@ -1,4 +1,5 @@
 #include <ui/debug/debug_overlay.h>
+#include "../../config.h"
 #include <stdio.h>
 #include <objects/text/text_renderer.h>
 #include <world/terrain/terrain.h>
@@ -27,9 +28,9 @@ void RenderDebugOverlay(int windowW, int windowH, bool wireframeMode, const glm:
     if (!g_visible) return;
 
     // Draw a simple debug panel in the top-left like the screenshot
-    const float padX = 10.0f;
-    const float padY = 10.0f;
-    const float lineH = 30.0f;
+    const float padX = Config::UI::Debug::PADDING_X;
+    const float padY = Config::UI::Debug::PADDING_Y;
+    const float lineH = Config::UI::Debug::LINE_HEIGHT;
 
     RenderTextOverlay("PROCGEN - Minimal Text Demo", padX, padY + 0.0f, windowW, windowH);
     RenderTextOverlay("Press ESC or close window to exit", padX, padY + lineH, windowW, windowH);

@@ -1,4 +1,5 @@
 #include "terrain.h"
+#include "../../config.h"
 #include <vector>
 #include <unordered_map>
 #include <cmath>
@@ -44,19 +45,19 @@ struct Chunk {
 
 static std::unordered_map<long long, Chunk> g_chunks;
 static noise::module::Perlin g_perlin;
-static int g_chunkSize = 32; // vertices per side
-static float g_scale = 1.5f; // spacing between vertices (larger to make terrain more planar)
-static int g_viewRadius = 3; // generate chunks within this radius
+static int g_chunkSize = Config::World::CHUNK_SIZE; // vertices per side
+static float g_scale = Config::World::VERTEX_SPACING; // spacing between vertices (larger to make terrain more planar)
+static int g_viewRadius = Config::World::VIEW_RADIUS; // generate chunks within this radius
 // terrain height scaling to reduce steepness
-static float g_heightAmplitude = 0.6f; // lower amplitude
-static float g_heightFrequency = 0.04f; // lower frequency for gentler slopes
+static float g_heightAmplitude = Config::Terrain::HEIGHT_AMPLITUDE; // lower amplitude
+static float g_heightFrequency = Config::Terrain::HEIGHT_FREQUENCY; // lower frequency for gentler slopes
 
 long long keyFor(int cx, int cz) {
     return (static_cast<long long>(cx) << 32) ^ static_cast<unsigned int>(cz);
 }
 
 bool InitTerrain() {
-    g_perlin.SetSeed(1337);
+    g_perlin.SetSeed(Config::World::PERLIN_SEED);
     g_perlin.SetFrequency(g_heightFrequency);
     return true;
 }
@@ -114,17 +115,23 @@ static void generateHeightmapAndGrid(Chunk& c) {
 static void generateGridBasedRoads(Chunk& c) {
     // Grid-based road generation pipeline
     int chunk_size = g_chunkSize;
-    int padding = 8;
-    int seed = 42;
+    int padding = Config::Highway::PADDING;
+    int seed = Config::Highway::SEED;
 
     // Stage 1: Generate highways (dummy for now)
-    c.roadGrid = generate_highways_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding, 2, 1000, 1.0f, 0.01f, seed, 4, 1.0f);
+    c.roadGrid = generate_highways_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding, 
+        Config::Highway::NUM_HIGHWAYS, Config::Highway::WORM_LENGTH, Config::Highway::STEP_SIZE, 
+        Config::Highway::PERLIN_SCALE, seed, Config::Highway::GRID_ANGLES, Config::Highway::NOISE_STRENGTH);
     
     // Stage 2: Generate roads
-    c.roadGrid = generate_roads_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding, 200, 800, 1.0f, 0.01f, seed, 4, 1.0f);
+    c.roadGrid = generate_roads_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding, 
+        Config::Road::NUM_ROADS, Config::Road::WORM_LENGTH, Config::Road::STEP_SIZE, 
+        Config::Road::PERLIN_SCALE, seed, Config::Road::GRID_ANGLES, Config::Road::NOISE_STRENGTH);
     
     // Stage 3: Generate streets
-    c.roadGrid = generate_streets_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding, 100, 400, 1.0f, 0.01f, seed, 4, 1.0f);
+    c.roadGrid = generate_streets_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding, 
+        Config::Street::NUM_STREETS, Config::Street::WORM_LENGTH, Config::Street::STEP_SIZE, 
+        Config::Street::PERLIN_SCALE, seed, Config::Street::GRID_ANGLES, Config::Street::NOISE_STRENGTH);
 }
 
 static void createMeshFromGrid(Chunk& c, int roadType, GLuint& VAO, GLuint& VBO, GLuint& EBO, int& indexCount) {
@@ -228,7 +235,7 @@ bool DetermineSpawnFromGenerated(float x, float z, glm::vec2 &out_point, int sea
     float bestDist2 = std::numeric_limits<float>::infinity();
     glm::vec2 bestPoint(x, z);
     int bestScore = 0;
-    const float intersectionRadius = 4.0f;
+    const float intersectionRadius = Config::Road::INTERSECTION_RADIUS;
 
     for (int dz = -search_radius_chunks; dz <= search_radius_chunks; ++dz) {
         for (int dx = -search_radius_chunks; dx <= search_radius_chunks; ++dx) {

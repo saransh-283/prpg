@@ -1,4 +1,5 @@
 #include "llm.h"
+#include "../../config.h"
 #include <iostream>
 #include <vector>
 #include <string>
@@ -49,9 +50,9 @@ bool initialize_llm(const std::string& model_path, int ngl, int n_ctx) {
 
     // initialize the sampler
     g_sampler_basic = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    llama_sampler_chain_add(g_sampler_basic, llama_sampler_init_min_p(0.05f, 1));
-    llama_sampler_chain_add(g_sampler_basic, llama_sampler_init_temp(0.8f));
-    llama_sampler_chain_add(g_sampler_basic, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+    llama_sampler_chain_add(g_sampler_basic, llama_sampler_init_min_p(Config::LLM::MIN_P, 1));
+    llama_sampler_chain_add(g_sampler_basic, llama_sampler_init_temp(Config::LLM::TEMPERATURE));
+    llama_sampler_chain_add(g_sampler_basic, llama_sampler_init_dist(Config::LLM::DEFAULT_SEED));
 
     return true;
 }

@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include "config.h"
 #include <objects/text/text_renderer.h>
 #include <ui/loading/loading.h>
 #include <objects/models/3d/cube/mesh.h>
@@ -39,10 +40,10 @@ int main(int argc, char *argv[])
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     // Request a depth buffer
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, Config::Window::DEPTH_BUFFER_SIZE);
 
-    const int windowW = 1200;
-    const int windowH = 800;
+    const int windowW = Config::Window::WIDTH;
+    const int windowH = Config::Window::HEIGHT;
     SDL_Window *window = SDL_CreateWindow("Procgen - Text Only",
                                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                           windowW, windowH,
@@ -99,7 +100,7 @@ int main(int argc, char *argv[])
     // functions that rely on an active GL context.
     // Instead of one big InitTerrain, enqueue per-chunk tasks for finer progress.
     // Use the same view radius as the terrain module (approx 3 chunks).
-    const int initialViewRadius = 3;
+    const int initialViewRadius = Config::World::INITIAL_VIEW_RADIUS;
     // center at 0,0 for initial generation
     int centerCx = 0;
     int centerCz = 0;
