@@ -23,8 +23,8 @@ namespace Window {
 // ============================================================================
 namespace World {
     constexpr int INITIAL_VIEW_RADIUS = 3;   // Number of chunks to generate initially around spawn
-    constexpr int CHUNK_SIZE = 256;           // Number of vertices per chunk side
-    constexpr float VERTEX_SPACING = 1.5f;   // World units between terrain vertices (larger = more planar terrain)
+    constexpr int CHUNK_SIZE = 128;           // Number of vertices per chunk side
+    constexpr float VERTEX_SPACING = 0.5f;   // World units between terrain vertices (larger = more planar terrain)
     constexpr int VIEW_RADIUS = 3;           // Chunks to keep loaded around player
     constexpr int PERLIN_SEED = 1337;        // Seed for terrain height noise generator
 }
@@ -35,6 +35,11 @@ namespace World {
 namespace Terrain {
     constexpr float HEIGHT_AMPLITUDE = 0.6f; // Vertical scaling of terrain height (lower = flatter)
     constexpr float HEIGHT_FREQUENCY = 0.04f;// Perlin noise frequency for terrain (lower = smoother/gentler slopes)
+    
+    // Rendering color (RGB values 0-255)
+    constexpr int COLOR_R = 76;              // Terrain red component
+    constexpr int COLOR_G = 204;             // Terrain green component (green grass)
+    constexpr int COLOR_B = 76;              // Terrain blue component
 }
 
 // ============================================================================
@@ -49,6 +54,11 @@ namespace Highway {
     constexpr float NOISE_STRENGTH = 1.0f;   // Amplitude of directional noise (higher = more variation)
     constexpr int PADDING = 8;               // Extra padding around chunk for seamless generation
     constexpr int SEED = 42;                 // Base seed for highway generation RNG
+    
+    // Rendering color (RGB values 0-255)
+    constexpr int COLOR_R = 153;             // Highway red component
+    constexpr int COLOR_G = 153;             // Highway green component (gray)
+    constexpr int COLOR_B = 153;             // Highway blue component
 }
 
 // ============================================================================
@@ -65,6 +75,11 @@ namespace Road {
     constexpr int SEED = 42;                 // Base seed for road generation RNG
     constexpr int SEARCH_RADIUS_CHUNKS = 1;  // Chunks to search when finding nearest road
     constexpr float INTERSECTION_RADIUS = 4.0f; // Distance to consider roads as intersecting (world units)
+    
+    // Rendering color (RGB values 0-255)
+    constexpr int COLOR_R = 204;             // Road red component
+    constexpr int COLOR_G = 204;             // Road green component (light beige)
+    constexpr int COLOR_B = 153;             // Road blue component
 }
 
 // ============================================================================
@@ -80,6 +95,11 @@ namespace Street {
     constexpr int PADDING = 8;               // Extra padding around chunk
     constexpr int SEED = 42;                 // Base seed for street generation RNG
     constexpr float ROAD_SEARCH_RADIUS = 4.0f; // Max distance to search for parent roads (world units)
+    
+    // Rendering color (RGB values 0-255)
+    constexpr int COLOR_R = 102;             // Street red component
+    constexpr int COLOR_G = 102;             // Street green component (dark gray)
+    constexpr int COLOR_B = 102;             // Street blue component
 }
 
 // ============================================================================
@@ -98,34 +118,9 @@ namespace LLM {
 // ============================================================================
 namespace Player {
     constexpr float MOUSE_SENSITIVITY = 0.12f;  // Mouse look sensitivity multiplier
-    constexpr float MOVE_SPEED = 2.5f;          // Player movement speed in units per second
-    constexpr float FLY_SPEED = 3.0f;           // Vertical movement speed when flying (units/sec)
-    constexpr float GRAVITY = -9.81f;           // Gravity acceleration (m/s²)
-}
+    constexpr float MOVE_SPEED = 25.0f;          // Player movement speed in units per second
 
-// ============================================================================
-// Rendering Colors (RGB values 0.0-1.0)
-// ============================================================================
-namespace Colors {
-    // Terrain color
-    constexpr float TERRAIN_R = 0.3f;        // Terrain red component
-    constexpr float TERRAIN_G = 0.8f;        // Terrain green component (green grass)
-    constexpr float TERRAIN_B = 0.3f;        // Terrain blue component
-    
-    // Highway color
-    constexpr float HIGHWAY_R = 0.6f;        // Highway red component
-    constexpr float HIGHWAY_G = 0.6f;        // Highway green component (gray)
-    constexpr float HIGHWAY_B = 0.6f;        // Highway blue component
-    
-    // Road color
-    constexpr float ROAD_R = 0.8f;           // Road red component
-    constexpr float ROAD_G = 0.8f;           // Road green component (light beige)
-    constexpr float ROAD_B = 0.6f;           // Road blue component
-    
-    // Street color
-    constexpr float STREET_R = 0.4f;         // Street red component
-    constexpr float STREET_G = 0.4f;         // Street green component (dark gray)
-    constexpr float STREET_B = 0.4f;         // Street blue component
+    constexpr float GRAVITY = -9.81f;           // Gravity acceleration (m/s²)
 }
 
 // ============================================================================

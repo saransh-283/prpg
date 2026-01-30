@@ -11,7 +11,6 @@ Player::Player()
     , pitch(0.0f)
     , velocity(0.0f)
     , onGround(false)
-    , flying(false)
     , mouseCaptured(true)
 {
 }
@@ -28,10 +27,8 @@ void Player::Initialize(const glm::vec3& initialPosition)
 
 void Player::Update(float deltaTime)
 {
-    if (!flying) {
-        ApplyGravity(deltaTime);
-        CheckGroundCollision();
-    }
+    ApplyGravity(deltaTime);
+    CheckGroundCollision();
 }
 
 void Player::HandleKeyboard(const Uint8* keyboardState, float deltaTime)
@@ -61,16 +58,6 @@ void Player::HandleKeyboard(const Uint8* keyboardState, float deltaTime)
     if (keyboardState[SDL_SCANCODE_D]) {
         cameraPos += right * moveSpeed * deltaTime;
     }
-    
-    // Flying vertical control: Up/Down when flying
-    if (flying) {
-        if (keyboardState[SDL_SCANCODE_UP]) {
-            cameraPos.y += flySpeed * deltaTime;
-        }
-        if (keyboardState[SDL_SCANCODE_DOWN]) {
-            cameraPos.y -= flySpeed * deltaTime;
-        }
-    }
 }
 
 void Player::HandleMouseMotion(float xrel, float yrel)
@@ -95,21 +82,6 @@ void Player::HandleKeyPress(SDL_Keycode key)
         case SDLK_m:
             // Toggle mouse capture
             SetMouseCaptured(!mouseCaptured);
-            break;
-            
-        case SDLK_SPACE:
-            // Toggle flying mode
-            flying = !flying;
-            if (flying) {
-                // Stop any falling motion when entering fly
-                velocity.y = 0.0f;
-                onGround = false;
-            } else {
-                // When disabling fly, ensure we're not below ground
-                float groundY = SampleTerrainHeight(cameraPos.x, cameraPos.z) + 0.5f;
-                if (cameraPos.y < groundY)
-                    cameraPos.y = groundY;
-            }
             break;
     }
 }

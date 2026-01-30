@@ -29,7 +29,6 @@ public:
     float GetYaw() const { return yaw; }
     float GetPitch() const { return pitch; }
     
-    bool IsFlying() const { return flying; }
     bool IsOnGround() const { return onGround; }
     bool IsMouseCaptured() const { return mouseCaptured; }
 
@@ -50,7 +49,6 @@ private:
     // Physics state
     glm::vec3 velocity;
     bool onGround;
-    bool flying;
     
     // Input state
     bool mouseCaptured;
@@ -58,7 +56,6 @@ private:
     // Movement parameters
     static constexpr float mouseSensitivity = Config::Player::MOUSE_SENSITIVITY;
     static constexpr float moveSpeed = Config::Player::MOVE_SPEED; // units per second
-    static constexpr float flySpeed = Config::Player::FLY_SPEED;  // vertical units per second while flying
     static constexpr float gravity = Config::Player::GRAVITY;
     
     // Helper methods

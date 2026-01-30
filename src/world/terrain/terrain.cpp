@@ -360,7 +360,7 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(terrainProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(terrainProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, Config::Colors::TERRAIN_R, Config::Colors::TERRAIN_G, Config::Colors::TERRAIN_B);
+            glUniform3f(colorLoc, Config::Terrain::COLOR_R / 255.0f, Config::Terrain::COLOR_G / 255.0f, Config::Terrain::COLOR_B / 255.0f);
             glBindVertexArray(c.VAO);
             glDrawElements(GL_TRIANGLES, c.indexCount, GL_UNSIGNED_INT, 0);
         }
@@ -371,7 +371,7 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(highwaysProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(highwaysProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, Config::Colors::HIGHWAY_R, Config::Colors::HIGHWAY_G, Config::Colors::HIGHWAY_B);
+            glUniform3f(colorLoc, Config::Highway::COLOR_R / 255.0f, Config::Highway::COLOR_G / 255.0f, Config::Highway::COLOR_B / 255.0f);
             glBindVertexArray(c.highwayVAO);
             glDrawElements(GL_TRIANGLES, c.highwayIndexCount, GL_UNSIGNED_INT, 0);
         }
@@ -382,7 +382,7 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(roadsProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(roadsProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, Config::Colors::ROAD_R, Config::Colors::ROAD_G, Config::Colors::ROAD_B);
+            glUniform3f(colorLoc, Config::Road::COLOR_R / 255.0f, Config::Road::COLOR_G / 255.0f, Config::Road::COLOR_B / 255.0f);
             glBindVertexArray(c.roadVAO);
             glDrawElements(GL_TRIANGLES, c.roadIndexCount, GL_UNSIGNED_INT, 0);
         }
@@ -393,7 +393,7 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(streetsProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(streetsProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, Config::Colors::STREET_R, Config::Colors::STREET_G, Config::Colors::STREET_B);
+            glUniform3f(colorLoc, Config::Street::COLOR_R / 255.0f, Config::Street::COLOR_G / 255.0f, Config::Street::COLOR_B / 255.0f);
             glBindVertexArray(c.streetVAO);
             glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
         }
