@@ -9,7 +9,8 @@ enum RoadType {
     TERRAIN = 0,
     HIGHWAY = 1,
     ROAD = 2,
-    STREET = 3
+    STREET = 3,
+    BUILDING = 4
 };
 
 // Generate a key for chunk coordinates
@@ -22,7 +23,7 @@ bool InitTerrain();
 void UpdateTerrain(const glm::vec3& cameraPos);
 
 // Render all generated terrain chunks using the provided shader programs and matrices
-void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsProgram, GLuint streetsProgram, const glm::mat4& proj, const glm::mat4& view);
+void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsProgram, GLuint streetsProgram, GLuint buildingsProgram, const glm::mat4& proj, const glm::mat4& view);
 
 // Cleanup GPU resources used by terrain
 void CleanupTerrain();

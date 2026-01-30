@@ -9,13 +9,14 @@ bool InitMap();
 // Render map given camera position, window size, marker shader and per-layer shaders
 // Supports both small corner map and full-screen map mode
 void RenderMap(const glm::vec3& cameraPos, int windowW, int windowH,
-			   GLuint markerProgram,
-			   GLuint terrainProgram,
-			   GLuint highwaysProgram,
-			   GLuint roadsProgram,
-			   GLuint streetsProgram,
-			   bool showFullMap = false,
-			   const glm::vec2& mapOffset = glm::vec2(0.0f));
+               GLuint markerProgram,
+               GLuint terrainProgram,
+               GLuint highwaysProgram,
+               GLuint roadsProgram,
+               GLuint streetsProgram,
+               GLuint buildingsProgram,
+               bool showFullMap = false,
+               const glm::vec2& mapOffset = glm::vec2(0.0f));
 
 // Toggle map visibility
 void ToggleMap();

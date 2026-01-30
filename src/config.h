@@ -103,11 +103,47 @@ namespace Street {
 }
 
 // ============================================================================
+// Building Generation Parameters
+// ============================================================================
+namespace Building {
+    constexpr float DENSITY = 15.0f;         // Building density multiplier (higher = more buildings)
+    constexpr int SEED = 42;                 // Base seed for building generation RNG
+    constexpr int PADDING = 8;               // Extra padding around chunk
+    
+    // Size ranges by road type
+    constexpr int HIGHWAY_MIN_SIZE = 15;     // Min building size near highways
+    constexpr int HIGHWAY_MAX_SIZE = 30;     // Max building size near highways
+    constexpr int ROAD_MIN_SIZE = 10;        // Min building size near roads
+    constexpr int ROAD_MAX_SIZE = 20;        // Max building size near roads
+    constexpr int STREET_MIN_SIZE = 6;       // Min building size near streets
+    constexpr int STREET_MAX_SIZE = 12;      // Max building size near streets
+    
+    // Height ranges by road type (deterministic random)
+    constexpr float HIGHWAY_MIN_HEIGHT = 20.0f; // Min building height near highways
+    constexpr float HIGHWAY_MAX_HEIGHT = 50.0f; // Max building height near highways
+    constexpr float ROAD_MIN_HEIGHT = 10.0f;    // Min building height near roads
+    constexpr float ROAD_MAX_HEIGHT = 30.0f;    // Max building height near roads
+    constexpr float STREET_MIN_HEIGHT = 5.0f;   // Min building height near streets
+    constexpr float STREET_MAX_HEIGHT = 15.0f;  // Max building height near streets
+    
+    // Shape probabilities
+    constexpr float RECTANGLE_PROBABILITY = 0.4f;  // 40% rectangles
+    constexpr float L_SHAPE_PROBABILITY = 0.7f;    // 30% L-shapes (cumulative)
+    constexpr float T_SHAPE_PROBABILITY = 0.85f;   // 15% T-shapes (cumulative)
+    // Remaining 15% are irregular polygons
+    
+    // Rendering color (RGB values 0-255)
+    constexpr int COLOR_R = 180;             // Building red component
+    constexpr int COLOR_G = 180;             // Building green component (light gray)
+    constexpr int COLOR_B = 180;             // Building blue component
+}
+
+// ============================================================================
 // LLM (Language Model) Parameters
 // ============================================================================
 namespace LLM {
-    constexpr int DEFAULT_GPU_LAYERS = -1;   // Number of model layers to offload to GPU (-1 = auto/all)
-    constexpr int DEFAULT_CONTEXT_SIZE = 2048; // Context window size in tokens
+    constexpr int DEFAULT_GPU_LAYERS = 16;   // Number of model layers to offload to GPU (-1 = auto/all)
+    constexpr int DEFAULT_CONTEXT_SIZE = 4096; // Context window size in tokens
     constexpr float MIN_P = 0.05f;           // Minimum probability threshold for token sampling
     constexpr float TEMPERATURE = 0.8f;      // Sampling temperature (higher = more random, lower = more deterministic)
     constexpr unsigned int DEFAULT_SEED = 0; // Default RNG seed for sampling (0 = random)

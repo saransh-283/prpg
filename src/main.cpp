@@ -200,6 +200,7 @@ int main(int argc, char *argv[])
     GLuint roadsShader = 0;
     GLuint highwaysShader = 0;
     GLuint streetsShader = 0;
+    GLuint buildingsShader = 0;
 
     // Run a small loading loop until tasks complete. This keeps the window
     // responsive and draws the loading overlay using the same GL context.
@@ -265,6 +266,12 @@ int main(int argc, char *argv[])
     {
         std::cerr << "Failed to load streets shader program" << std::endl;
         streetsShader = 0;
+    }
+
+    if (!LoadShaderProgram("src/assets/shaders/buildings/buildings.vert", "src/assets/shaders/buildings/buildings.frag", buildingsShader))
+    {
+        std::cerr << "Failed to load buildings shader program" << std::endl;
+        buildingsShader = 0;
     }
 
     bool running = true;
@@ -380,7 +387,7 @@ int main(int argc, char *argv[])
             GLint colorLoc = glGetUniformLocation(program3D, "uColor");
 
             // Render terrain with different shaders for different geometry types
-            RenderTerrain(terrainShader, highwaysShader, roadsShader, streetsShader, proj, view);
+            RenderTerrain(terrainShader, highwaysShader, roadsShader, streetsShader, buildingsShader, proj, view);
 
             // Render map UI - either full screen or corner minimap (marker uses program3D, layers use per-type shaders)
             // When map is visible, show full screen map with current offset, otherwise show small corner view
@@ -389,9 +396,9 @@ int main(int argc, char *argv[])
                 glm::vec2 mapOffset(0.0f, 0.0f);
                 // We need to track the offset, so we'll pass it through the state
                 // The offset is already tracked internally in map.cpp
-                RenderMap(cameraPos, windowW, windowH, program3D, terrainShader, highwaysShader, roadsShader, streetsShader, true, glm::vec2(0.0f));
+                RenderMap(cameraPos, windowW, windowH, program3D, terrainShader, highwaysShader, roadsShader, streetsShader, buildingsShader, true, glm::vec2(0.0f));
             } else {
-                RenderMap(cameraPos, windowW, windowH, program3D, terrainShader, highwaysShader, roadsShader, streetsShader, false, glm::vec2(0.0f));
+                RenderMap(cameraPos, windowW, windowH, program3D, terrainShader, highwaysShader, roadsShader, streetsShader, buildingsShader, false, glm::vec2(0.0f));
             }
         }
 

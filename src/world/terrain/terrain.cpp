@@ -9,6 +9,8 @@
 #include <world/roads/roads.h>
 #include <world/highways/highways.h>
 #include <world/streets/streets.h>
+#include <world/buildings/buildings.h>
+#include <assets/objects/models/3d/prism/mesh.h>
 #include <limits>
 #include <algorithm>
 #include <iostream>
@@ -28,16 +30,23 @@ struct Chunk {
     GLuint streetVAO = 0;
     GLuint streetVBO = 0;
     GLuint streetEBO = 0;
+    GLuint buildingVAO = 0;
+    GLuint buildingVBO = 0;
+    GLuint buildingEBO = 0;
     int indexCount = 0;
     int highwayIndexCount = 0;
     int roadIndexCount = 0;
     int streetIndexCount = 0;
+    int buildingIndexCount = 0;
     // store generated polyline data (vector of polylines)
     std::vector<std::vector<glm::vec2>> highwayPolylines;
     std::vector<std::vector<glm::vec2>> roadPolylines;
     std::vector<std::vector<glm::vec2>> streetPolylines;
-    // Grid data for road types (0=terrain, 1=highway, 2=road, 3=street)
+    // Grid data for road types (0=terrain, 1=highway, 2=road, 3=street, 4=building)
     std::vector<std::vector<int>> roadGrid;
+    // Building data
+    std::vector<BuildingShape> buildings;
+    std::vector<PrismMesh> buildingMeshes;
     // Terrain vertices for filtering
     std::vector<float> terrainVertices;
     std::vector<unsigned int> terrainIndices;
@@ -132,6 +141,10 @@ static void generateGridBasedRoads(Chunk& c) {
     c.roadGrid = generate_streets_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding, 
         Config::Street::NUM_STREETS, Config::Street::WORM_LENGTH, Config::Street::STEP_SIZE, 
         Config::Street::PERLIN_SCALE, seed, Config::Street::GRID_ANGLES, Config::Street::NOISE_STRENGTH);
+    
+    // Stage 4: Generate buildings
+    c.buildings = generate_buildings_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding,
+        Config::Building::DENSITY, Config::Building::SEED);
 }
 
 static void createMeshFromGrid(Chunk& c, int roadType, GLuint& VAO, GLuint& VBO, GLuint& EBO, int& indexCount) {
@@ -205,6 +218,56 @@ static void createChunkMesh(Chunk& c) {
     createMeshFromGrid(c, HIGHWAY, c.highwayVAO, c.highwayVBO, c.highwayEBO, c.highwayIndexCount);
     createMeshFromGrid(c, ROAD, c.roadVAO, c.roadVBO, c.roadEBO, c.roadIndexCount);
     createMeshFromGrid(c, STREET, c.streetVAO, c.streetVBO, c.streetEBO, c.streetIndexCount);
+    createMeshFromGrid(c, BUILDING, c.buildingVAO, c.buildingVBO, c.buildingEBO, c.buildingIndexCount);
+    
+    // Create 3D building meshes
+    c.buildingMeshes.clear();
+    c.buildingMeshes.reserve(c.buildings.size());
+    
+    // World offset for this chunk (top-left corner in world space)
+    float wx = c.cx * (g_chunkSize - 1) * g_scale;
+    float wz = c.cz * (g_chunkSize - 1) * g_scale;
+    
+    for (const auto& building : c.buildings) {
+        // Convert polygon points from grid coordinates to world-space relative coordinates
+        std::vector<float> polygonPoints;
+        polygonPoints.reserve(building.points.size() * 2);
+        
+        // First, calculate center in grid coordinates
+        float gridCenterX = 0.0f, gridCenterZ = 0.0f;
+        for (const auto& pt : building.points) {
+            gridCenterX += pt.x;
+            gridCenterZ += pt.y;
+        }
+        gridCenterX /= building.points.size();
+        gridCenterZ /= building.points.size();
+        
+        // Convert to world coordinates for the building center
+        float worldCenterX = wx + gridCenterX * g_scale;
+        float worldCenterZ = wz + gridCenterZ * g_scale;
+        
+        // Build polygon points relative to center, scaled to world space
+        for (const auto& pt : building.points) {
+            polygonPoints.push_back((pt.x - gridCenterX) * g_scale);
+            polygonPoints.push_back((pt.y - gridCenterZ) * g_scale);
+        }
+        
+        // Sample terrain height at building center
+        float centerY = sampleHeight(worldCenterX, worldCenterZ);
+        
+        // Create prism mesh from polygon with height
+        // Building sits on terrain, extends upward by building.height
+        PrismMesh buildingMesh = CreatePrismMeshFromPolygon(
+            polygonPoints.data(), 
+            building.points.size(),
+            worldCenterX,
+            centerY + building.height * 0.5f,  // Center vertically above terrain
+            worldCenterZ,
+            building.height
+        );
+        
+        c.buildingMeshes.push_back(buildingMesh);
+    }
 }
 
 // Public API: generate terrain chunk with complete pipeline
@@ -269,6 +332,12 @@ glm::vec2 DetermineSpawnPoint(float x, float z, int search_radius_chunks) {
                     // basic intersection scoring: count other nearby points in this chunk's polylines
                     for (auto &otherPoly : c.roadPolylines) {
                         for (auto &other : otherPoly) {
+    
+    // Cleanup building meshes
+    for (auto& buildingMesh : c.buildingMeshes) {
+        DestroyPrismMesh(buildingMesh);
+    }
+    c.buildingMeshes.clear();
                             float ddx = other.x - proj.x;
                             float ddz = other.y - proj.y;
                             if (ddx*ddx + ddz*ddz <= intersectionRadius * intersectionRadius) ++score;
@@ -312,6 +381,18 @@ static void destroyChunk(Chunk& c) {
     if (c.streetEBO) glDeleteBuffers(1, &c.streetEBO);
     c.streetVAO = c.streetVBO = c.streetEBO = 0;
     c.streetIndexCount = 0;
+    
+    if (c.buildingVAO) glDeleteVertexArrays(1, &c.buildingVAO);
+    if (c.buildingVBO) glDeleteBuffers(1, &c.buildingVBO);
+    if (c.buildingEBO) glDeleteBuffers(1, &c.buildingEBO);
+    c.buildingVAO = c.buildingVBO = c.buildingEBO = 0;
+    c.buildingIndexCount = 0;
+    
+    // Cleanup building meshes
+    for (auto& buildingMesh : c.buildingMeshes) {
+        DestroyPrismMesh(buildingMesh);
+    }
+    c.buildingMeshes.clear();
 }
 
 void UpdateTerrain(const glm::vec3& cameraPos) {
@@ -348,7 +429,7 @@ void UpdateTerrain(const glm::vec3& cameraPos) {
     }
 }
 
-void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsProgram, GLuint streetsProgram, const glm::mat4& proj, const glm::mat4& view) {
+void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsProgram, GLuint streetsProgram, GLuint buildingsProgram, const glm::mat4& proj, const glm::mat4& view) {
     for (auto& kv : g_chunks) {
         Chunk& c = kv.second;
         glm::mat4 model = glm::mat4(1.0f);
@@ -396,6 +477,33 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             glUniform3f(colorLoc, Config::Street::COLOR_R / 255.0f, Config::Street::COLOR_G / 255.0f, Config::Street::COLOR_B / 255.0f);
             glBindVertexArray(c.streetVAO);
             glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
+        }
+        
+        // Render building base (2D footprint)
+        if (buildingsProgram != 0 && c.buildingVAO != 0 && c.buildingIndexCount > 0) {
+            glUseProgram(buildingsProgram);
+            GLint loc = glGetUniformLocation(buildingsProgram, "uMVP");
+            GLint colorLoc = glGetUniformLocation(buildingsProgram, "uColor");
+            glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
+            glUniform3f(colorLoc, Config::Building::COLOR_R / 255.0f, Config::Building::COLOR_G / 255.0f, Config::Building::COLOR_B / 255.0f);
+            glBindVertexArray(c.buildingVAO);
+            glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
+        }
+        
+        // Render 3D buildings (prisms)
+        if (buildingsProgram != 0) {
+            glUseProgram(buildingsProgram);
+            GLint colorLoc = glGetUniformLocation(buildingsProgram, "uColor");
+            glUniform3f(colorLoc, Config::Building::COLOR_R / 255.0f, Config::Building::COLOR_G / 255.0f, Config::Building::COLOR_B / 255.0f);
+            
+            for (const auto& buildingMesh : c.buildingMeshes) {
+                if (buildingMesh.mesh.VAO != 0 && buildingMesh.mesh.indexCount > 0) {
+                    GLint loc = glGetUniformLocation(buildingsProgram, "uMVP");
+                    glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
+                    glBindVertexArray(buildingMesh.mesh.VAO);
+                    glDrawElements(GL_TRIANGLES, buildingMesh.mesh.indexCount, GL_UNSIGNED_INT, 0);
+                }
+            }
         }
     }
 

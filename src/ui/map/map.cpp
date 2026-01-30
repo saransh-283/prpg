@@ -68,6 +68,7 @@ void RenderMap(const glm::vec3& cameraPos, int windowW, int windowH,
                    GLuint highwaysProgram,
                    GLuint roadsProgram,
                    GLuint streetsProgram,
+                   GLuint buildingsProgram,
                    bool showFullMap,
                    const glm::vec2& mapOffset) {
     // Use internal offset instead of parameter (parameter kept for API compatibility)
@@ -123,7 +124,7 @@ void RenderMap(const glm::vec3& cameraPos, int windowW, int windowH,
     glViewport(miniX, miniY, miniW, miniH);
 
     // Render terrain top-down using the specialized per-layer shaders
-    RenderTerrain(terrainProgram, highwaysProgram, roadsProgram, streetsProgram, projMini, viewMini);
+    RenderTerrain(terrainProgram, highwaysProgram, roadsProgram, streetsProgram, buildingsProgram, projMini, viewMini);
 
     // Player marker as small filled square
     float markSize = worldRadius * Config::UI::Map::MARKER_SIZE_RATIO;
