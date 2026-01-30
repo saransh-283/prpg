@@ -109,7 +109,12 @@ void RenderMap(const glm::vec3& cameraPos, int windowW, int windowH,
     float cx = cameraPos.x + g_mapOffset.x;
     float cz = cameraPos.z + g_mapOffset.y;
 
-    glm::mat4 projMini = glm::ortho(-worldRadius, worldRadius, -worldRadius, worldRadius, -1000.0f, 1000.0f);
+    // Calculate aspect ratio to prevent stretching
+    float aspect = static_cast<float>(miniW) / static_cast<float>(miniH);
+    float worldRadiusX = worldRadius * aspect;
+    float worldRadiusY = worldRadius;
+    
+    glm::mat4 projMini = glm::ortho(-worldRadiusX, worldRadiusX, -worldRadiusY, worldRadiusY, -1000.0f, 1000.0f);
     glm::vec3 eye(cx, Config::UI::Map::CAMERA_HEIGHT, cz);
     glm::vec3 center(cx, 0.0f, cz);
     glm::vec3 up(0.0f, 0.0f, -1.0f);

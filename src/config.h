@@ -119,7 +119,6 @@ namespace LLM {
 namespace Player {
     constexpr float MOUSE_SENSITIVITY = 0.12f;  // Mouse look sensitivity multiplier
     constexpr float MOVE_SPEED = 25.0f;          // Player movement speed in units per second
-
     constexpr float GRAVITY = -9.81f;           // Gravity acceleration (m/s²)
 }
 
