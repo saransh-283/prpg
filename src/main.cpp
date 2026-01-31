@@ -124,7 +124,7 @@ int main(int argc, char *argv[])
                 if (glm::length(candidate - glm::vec2(initialCameraPos.x, initialCameraPos.z)) > 0.1f) {
                     initialCameraPos.x = candidate.x;
                     initialCameraPos.z = candidate.y;
-                    initialCameraPos.y = SampleTerrainHeight(candidate.x, candidate.y) + 0.5f;
+                    initialCameraPos.y = SampleTerrainHeight(candidate.x, candidate.y) + Config::Camera::HEIGHT_OFFSET;
                     ClearLoadingTasks();
                 }
                 return true;
@@ -144,7 +144,7 @@ int main(int argc, char *argv[])
         // store the spawn into the initialCameraPos variable capture; main will use it
         initialCameraPos.x = spawn.x;
         initialCameraPos.z = spawn.y;
-        initialCameraPos.y = SampleTerrainHeight(spawn.x, spawn.y) + 0.5f;
+        initialCameraPos.y = SampleTerrainHeight(spawn.x, spawn.y) + Config::Camera::HEIGHT_OFFSET;
         return true;
     }, "DetermineSpawn");
     AddLoadingTask([&](){
@@ -281,7 +281,7 @@ int main(int argc, char *argv[])
     // No external objects: terrain-only scene
 
     // Camera/projection setup
-    glm::mat4 proj = glm::perspective(glm::radians(60.0f), (float)windowW / (float)windowH, 0.1f, 100.0f);
+    glm::mat4 proj = glm::perspective(glm::radians(Config::Camera::FOV), (float)windowW / (float)windowH, Config::Camera::NEAR_PLANE, Config::Camera::FAR_PLANE);
     
     // Initialize player
     Player player;

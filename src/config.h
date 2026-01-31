@@ -158,6 +158,13 @@ namespace Player {
     constexpr float GRAVITY = -9.81f;           // Gravity acceleration (m/s²)
 }
 
+namespace Camera {
+    constexpr float NEAR_PLANE = 0.1f;          // Near clipping plane distance
+    constexpr float FAR_PLANE = 1000.0f;        // Far clipping plane distance
+    constexpr float HEIGHT_OFFSET = 2.0f;       // Camera/player height above terrain
+    constexpr float FOV = 60.0f;                // Field of view in degrees
+}
+
 // ============================================================================
 // UI Parameters
 // ============================================================================
