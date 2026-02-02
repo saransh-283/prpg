@@ -649,6 +649,110 @@ void CleanupTerrain() {
     g_chunks.clear();
 }
 
+// Render terrain to G-buffer for deferred rendering
+void RenderTerrainToGBuffer(GLuint geometryShader, const glm::mat4& proj, const glm::mat4& view) {
+    if (geometryShader == 0) return;
+
+    glUseProgram(geometryShader);
+    
+    GLint modelLoc = glGetUniformLocation(geometryShader, "model");
+    GLint viewLoc = glGetUniformLocation(geometryShader, "view");
+    GLint projLoc = glGetUniformLocation(geometryShader, "projection");
+    GLint colorLoc = glGetUniformLocation(geometryShader, "uColor");
+    
+    glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
+    glUniformMatrix4fv(projLoc, 1, GL_FALSE, glm::value_ptr(proj));
+
+    for (auto& kv : g_chunks) {
+        Chunk& c = kv.second;
+        glm::mat4 model = glm::mat4(1.0f);
+        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
+
+        // Render terrain
+        if (c.VAO != 0 && c.indexCount > 0) {
+            glUniform3f(colorLoc, Config::Terrain::COLOR_R / 255.0f, Config::Terrain::COLOR_G / 255.0f, Config::Terrain::COLOR_B / 255.0f);
+            glBindVertexArray(c.VAO);
+            glDrawElements(GL_TRIANGLES, c.indexCount, GL_UNSIGNED_INT, 0);
+        }
+
+        // Render highways
+        if (c.highwayVAO != 0 && c.highwayIndexCount > 0) {
+            glUniform3f(colorLoc, Config::Highway::COLOR_R / 255.0f, Config::Highway::COLOR_G / 255.0f, Config::Highway::COLOR_B / 255.0f);
+            glBindVertexArray(c.highwayVAO);
+            glDrawElements(GL_TRIANGLES, c.highwayIndexCount, GL_UNSIGNED_INT, 0);
+        }
+
+        // Render roads
+        if (c.roadVAO != 0 && c.roadIndexCount > 0) {
+            glUniform3f(colorLoc, Config::Road::COLOR_R / 255.0f, Config::Road::COLOR_G / 255.0f, Config::Road::COLOR_B / 255.0f);
+            glBindVertexArray(c.roadVAO);
+            glDrawElements(GL_TRIANGLES, c.roadIndexCount, GL_UNSIGNED_INT, 0);
+        }
+
+        // Render streets
+        if (c.streetVAO != 0 && c.streetIndexCount > 0) {
+            glUniform3f(colorLoc, Config::Street::COLOR_R / 255.0f, Config::Street::COLOR_G / 255.0f, Config::Street::COLOR_B / 255.0f);
+            glBindVertexArray(c.streetVAO);
+            glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
+        }
+        
+        // Render buildings
+        if (c.buildingVAO != 0 && c.buildingIndexCount > 0) {
+            glUniform3f(colorLoc, Config::Building::COLOR_R / 255.0f, Config::Building::COLOR_G / 255.0f, Config::Building::COLOR_B / 255.0f);
+            glBindVertexArray(c.buildingVAO);
+            glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
+        }
+    }
+
+    glBindVertexArray(0);
+}
+
+// Render terrain to shadow map
+void RenderTerrainToShadowMap(GLuint shadowShader, const glm::mat4& lightSpaceMatrix) {
+    if (shadowShader == 0) return;
+
+    glUseProgram(shadowShader);
+    
+    GLint lightSpaceLoc = glGetUniformLocation(shadowShader, "lightSpaceMatrix");
+    GLint modelLoc = glGetUniformLocation(shadowShader, "model");
+    
+    glUniformMatrix4fv(lightSpaceLoc, 1, GL_FALSE, glm::value_ptr(lightSpaceMatrix));
+
+    for (auto& kv : g_chunks) {
+        Chunk& c = kv.second;
+        glm::mat4 model = glm::mat4(1.0f);
+        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
+
+        // Render all geometry to shadow map
+        if (c.VAO != 0 && c.indexCount > 0) {
+            glBindVertexArray(c.VAO);
+            glDrawElements(GL_TRIANGLES, c.indexCount, GL_UNSIGNED_INT, 0);
+        }
+
+        if (c.highwayVAO != 0 && c.highwayIndexCount > 0) {
+            glBindVertexArray(c.highwayVAO);
+            glDrawElements(GL_TRIANGLES, c.highwayIndexCount, GL_UNSIGNED_INT, 0);
+        }
+
+        if (c.roadVAO != 0 && c.roadIndexCount > 0) {
+            glBindVertexArray(c.roadVAO);
+            glDrawElements(GL_TRIANGLES, c.roadIndexCount, GL_UNSIGNED_INT, 0);
+        }
+
+        if (c.streetVAO != 0 && c.streetIndexCount > 0) {
+            glBindVertexArray(c.streetVAO);
+            glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
+        }
+        
+        if (c.buildingVAO != 0 && c.buildingIndexCount > 0) {
+            glBindVertexArray(c.buildingVAO);
+            glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
+        }
+    }
+
+    glBindVertexArray(0);
+}
+
 void WorldToChunk(float x, float z, int &out_cx, int &out_cz) {
     out_cx = static_cast<int>(std::floor(x / ((g_chunkSize - 1) * g_scale)));
     out_cz = static_cast<int>(std::floor(z / ((g_chunkSize - 1) * g_scale)));

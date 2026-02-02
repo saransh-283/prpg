@@ -106,7 +106,7 @@ namespace Street {
 // Building Generation Parameters
 // ============================================================================
 namespace Building {
-    constexpr float DENSITY = 15.0f;         // Building density multiplier (higher = more buildings)
+    constexpr float DENSITY = 10.0f;         // Building density multiplier (higher = more buildings)
     constexpr int SEED = 42;                 // Base seed for building generation RNG
     constexpr int PADDING = 8;               // Extra padding around chunk
     
@@ -163,6 +163,33 @@ namespace Camera {
     constexpr float FAR_PLANE = 1000.0f;        // Far clipping plane distance
     constexpr float HEIGHT_OFFSET = 5.0f;       // Camera/player height above terrain
     constexpr float FOV = 60.0f;                // Field of view in degrees
+}
+
+// ============================================================================
+// Rendering Parameters
+// ============================================================================
+namespace Rendering {
+    constexpr int SHADOW_MAP_RESOLUTION = 4096; // Shadow map texture resolution (higher = sharper shadows)
+    constexpr float SHADOW_DISTANCE = 100.0f;   // Distance from camera to render shadows
+    constexpr float SHADOW_BIAS = 0.0005f;      // Bias to reduce shadow acne
+    
+    // Sun/Directional Light
+    namespace Sun {
+        // Direction is the light ray direction (from sun toward the world).
+        // 10–11am-ish: not directly overhead (shallower elevation).
+        constexpr float DIRECTION_X = -0.3f;    // Sun direction X component
+        constexpr float DIRECTION_Y = -0.7f;    // Sun direction Y component (negative = from above)
+        constexpr float DIRECTION_Z = -0.5f;    // Sun direction Z component
+        constexpr float COLOR_R = 1.0f;         // Sun color red component
+        constexpr float COLOR_G = 0.95f;        // Sun color green component (warm white)
+        constexpr float COLOR_B = 0.8f;         // Sun color blue component
+        constexpr float INTENSITY = 1.2f;       // Sun light intensity multiplier
+    }
+    
+    // Skybox
+    namespace Skybox {
+        constexpr float TIME_OF_DAY = 0.5f;     // Time of day (0.0 = midnight, 0.5 = noon, 1.0 = midnight)
+    }
 }
 
 // ============================================================================

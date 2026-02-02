@@ -22,6 +22,9 @@
 #include <ui/debug/debug_overlay.h>
 // Player entity
 #include <entities/player/player.h>
+// Deferred renderer and skybox
+#include <rendering/deferred_renderer.h>
+#include <rendering/skybox.h>
 
 int main(int argc, char *argv[])
 {
@@ -294,6 +297,34 @@ int main(int argc, char *argv[])
     // Initialize debug overlay (starts hidden)
     InitDebugOverlay();
 
+    // Initialize deferred renderer
+    if (!DeferredRenderer::Initialize(windowW, windowH)) {
+        std::cerr << "Failed to initialize deferred renderer" << std::endl;
+        running = false;
+    }
+
+    // Initialize skybox
+    if (!Skybox::Initialize()) {
+        std::cerr << "Failed to initialize skybox" << std::endl;
+        running = false;
+    }
+
+    // Set sun properties
+    DeferredRenderer::SetSunDirection(glm::vec3(
+        Config::Rendering::Sun::DIRECTION_X,
+        Config::Rendering::Sun::DIRECTION_Y,
+        Config::Rendering::Sun::DIRECTION_Z
+    ));
+    DeferredRenderer::SetSunColor(glm::vec3(
+        Config::Rendering::Sun::COLOR_R,
+        Config::Rendering::Sun::COLOR_G,
+        Config::Rendering::Sun::COLOR_B
+    ));
+    DeferredRenderer::SetSunIntensity(Config::Rendering::Sun::INTENSITY);
+
+    // Match skybox to configured time-of-day.
+    Skybox::SetTimeOfDay(Config::Rendering::Skybox::TIME_OF_DAY);
+
     while (running)
     {
         Uint32 now = SDL_GetTicks();
@@ -364,33 +395,62 @@ int main(int argc, char *argv[])
         
         player.Update(delta);
 
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        // Deferred passes must not blend into the G-buffer.
+        glDisable(GL_BLEND);
 
-        // Render 3D shapes
+        // === SHADOW PASS ===
+        DeferredRenderer::BeginShadowPass();
+        glm::mat4 lightSpaceMatrix = DeferredRenderer::GetLightSpaceMatrix();
+        RenderTerrainToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix);
+        DeferredRenderer::EndShadowPass();
+
+        // === GEOMETRY PASS (render to G-buffer) ===
+        DeferredRenderer::BeginGeometryPass();
+        
+        // Update view matrix from player camera
+        glm::vec3 cameraPos = player.GetPosition();
+        glm::vec3 cameraFront = player.GetFront();
+        glm::vec3 cameraUp = player.GetUp();
+        glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+
+        // Update terrain generation around camera
+        UpdateTerrain(cameraPos);
+
+        // Render world geometry to G-buffer
+        RenderTerrainToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view);
+        
+        DeferredRenderer::EndGeometryPass();
+
+        // === LIGHTING PASS (deferred shading) ===
+        // Reset to default framebuffer and viewport
+        glViewport(0, 0, windowW, windowH);
+        DeferredRenderer::LightingPass(view, proj, cameraPos);
+
+        // Copy depth buffer from G-buffer to default framebuffer for forward rendering
+        DeferredRenderer::CopyDepthToDefaultFramebuffer();
+
+        // === SKYBOX PASS (render after lighting but before HUD) ===
+        Skybox::Render(view, proj);
+
+        // HUD/UI uses alpha blending.
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // === HUD RENDERING (map/minimap - no lighting/shadows) ===
+        // These are 2D overlays, so they don't need shadows or lighting
+        // Render map UI - either full screen or corner minimap (marker uses program3D, layers use per-type shaders)
+        // When map is visible, show full screen map with current offset, otherwise show small corner view
         if (program3D)
         {
             glUseProgram(program3D);
 
-            angle += delta * 1.0f; // radians per second
+            // Render 3D shapes
+            if (program3D)
+            {
+                angle += delta * 1.0f; // radians per second
+            }
 
-            // Update view matrix from player camera
-            glm::vec3 cameraPos = player.GetPosition();
-            glm::vec3 cameraFront = player.GetFront();
-            glm::vec3 cameraUp = player.GetUp();
-            glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
-
-            // Update terrain generation around camera
-            UpdateTerrain(cameraPos);
-
-            // Uniform locations reused for all objects
-            GLint loc = glGetUniformLocation(program3D, "uMVP");
-            GLint colorLoc = glGetUniformLocation(program3D, "uColor");
-
-            // Render terrain with different shaders for different geometry types
-            RenderTerrain(terrainShader, highwaysShader, roadsShader, streetsShader, buildingsShader, proj, view);
-
-            // Render map UI - either full screen or corner minimap (marker uses program3D, layers use per-type shaders)
-            // When map is visible, show full screen map with current offset, otherwise show small corner view
+            // Render map UI
             if (IsMapVisible()) {
                 // Get current map offset for scrolling
                 glm::vec2 mapOffset(0.0f, 0.0f);
@@ -402,8 +462,8 @@ int main(int argc, char *argv[])
             }
         }
 
-    // Debug overlay (hidden by default)
-    RenderDebugOverlay(windowW, windowH, wireframeMode, player.GetPosition());
+        // Debug overlay (hidden by default)
+        RenderDebugOverlay(windowW, windowH, wireframeMode, player.GetPosition());
 
         SDL_GL_SwapWindow(window);
 
@@ -420,6 +480,12 @@ int main(int argc, char *argv[])
 
     // Cleanup map
     CleanupMap();
+
+    // Cleanup deferred renderer
+    DeferredRenderer::Cleanup();
+
+    // Cleanup skybox
+    Skybox::Cleanup();
 
     SDL_GL_DeleteContext(glContext);
     SDL_DestroyWindow(window);
