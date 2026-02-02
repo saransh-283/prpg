@@ -10,7 +10,7 @@
 #include <world/highways/highways.h>
 #include <world/streets/streets.h>
 #include <world/buildings/buildings.h>
-#include <assets/objects/models/3d/prism/mesh.h>
+#include <assets/objects/models/2d/polygon/mesh.h>
 #include <limits>
 #include <algorithm>
 #include <iostream>
@@ -46,7 +46,7 @@ struct Chunk {
     std::vector<std::vector<int>> roadGrid;
     // Building data
     std::vector<BuildingShape> buildings;
-    std::vector<PrismMesh> buildingMeshes;
+    std::vector<PolygonMesh> buildingPolygonMeshes;
     // Terrain vertices for filtering
     std::vector<float> terrainVertices;
     std::vector<unsigned int> terrainIndices;
@@ -154,16 +154,9 @@ static void createMeshFromGrid(Chunk& c, int roadType, GLuint& VAO, GLuint& VBO,
     // Find triangles that belong to this road type
     for (int z = 0; z < g_chunkSize - 1; ++z) {
         for (int x = 0; x < g_chunkSize - 1; ++x) {
-            // Check if any corner of this quad has the matching road type
-            bool hasRoadType = false;
-            if (c.roadGrid[z][x] == roadType || 
-                c.roadGrid[z][x+1] == roadType ||
-                c.roadGrid[z+1][x] == roadType ||
-                c.roadGrid[z+1][x+1] == roadType) {
-                hasRoadType = true;
-            }
-            
-            if (hasRoadType) {
+            // Only include this quad if the top-left corner matches the road type
+            // This ensures each grid cell is rendered by exactly one mesh (no overlaps)
+            if (c.roadGrid[z][x] == roadType) {
                 // Add the two triangles for this quad
                 int baseIdx = vertices.size() / 3;
                 
@@ -172,7 +165,7 @@ static void createMeshFromGrid(Chunk& c, int roadType, GLuint& VAO, GLuint& VBO,
                     for (int dx = 0; dx <= 1; ++dx) {
                         int vertIdx = (z + dz) * g_chunkSize + (x + dx);
                         vertices.push_back(c.terrainVertices[vertIdx * 3]);     // x
-                        vertices.push_back(c.terrainVertices[vertIdx * 3 + 1] + 0.01f * roadType); // y (slight offset)
+                        vertices.push_back(c.terrainVertices[vertIdx * 3 + 1]); // y (same height - no offset)
                         vertices.push_back(c.terrainVertices[vertIdx * 3 + 2]); // z
                     }
                 }
@@ -220,20 +213,16 @@ static void createChunkMesh(Chunk& c) {
     createMeshFromGrid(c, STREET, c.streetVAO, c.streetVBO, c.streetEBO, c.streetIndexCount);
     createMeshFromGrid(c, BUILDING, c.buildingVAO, c.buildingVBO, c.buildingEBO, c.buildingIndexCount);
     
-    // Create 3D building meshes
-    c.buildingMeshes.clear();
-    c.buildingMeshes.reserve(c.buildings.size());
+    // Create 2D polygon meshes for building blueprints
+    c.buildingPolygonMeshes.clear();
+    c.buildingPolygonMeshes.reserve(c.buildings.size());
     
-    // World offset for this chunk (top-left corner in world space)
+    // World offset for this chunk
     float wx = c.cx * (g_chunkSize - 1) * g_scale;
     float wz = c.cz * (g_chunkSize - 1) * g_scale;
     
     for (const auto& building : c.buildings) {
-        // Convert polygon points from grid coordinates to world-space relative coordinates
-        std::vector<float> polygonPoints;
-        polygonPoints.reserve(building.points.size() * 2);
-        
-        // First, calculate center in grid coordinates
+        // Calculate center in grid coordinates
         float gridCenterX = 0.0f, gridCenterZ = 0.0f;
         for (const auto& pt : building.points) {
             gridCenterX += pt.x;
@@ -247,6 +236,8 @@ static void createChunkMesh(Chunk& c) {
         float worldCenterZ = wz + gridCenterZ * g_scale;
         
         // Build polygon points relative to center, scaled to world space
+        std::vector<float> polygonPoints;
+        polygonPoints.reserve(building.points.size() * 2);
         for (const auto& pt : building.points) {
             polygonPoints.push_back((pt.x - gridCenterX) * g_scale);
             polygonPoints.push_back((pt.y - gridCenterZ) * g_scale);
@@ -255,18 +246,16 @@ static void createChunkMesh(Chunk& c) {
         // Sample terrain height at building center
         float centerY = sampleHeight(worldCenterX, worldCenterZ);
         
-        // Create prism mesh from polygon with height
-        // Building sits on terrain, extends upward by building.height
-        PrismMesh buildingMesh = CreatePrismMeshFromPolygon(
-            polygonPoints.data(), 
+        // Create 2D polygon mesh for building blueprint
+        PolygonMesh blueprintMesh = CreatePolygonMesh(
+            polygonPoints.data(),
             building.points.size(),
             worldCenterX,
-            centerY + building.height * 0.5f,  // Center vertically above terrain
-            worldCenterZ,
-            building.height
+            centerY + 0.02f,  // Slightly above terrain to avoid z-fighting
+            worldCenterZ
         );
         
-        c.buildingMeshes.push_back(buildingMesh);
+        c.buildingPolygonMeshes.push_back(blueprintMesh);
     }
 }
 
@@ -332,12 +321,6 @@ glm::vec2 DetermineSpawnPoint(float x, float z, int search_radius_chunks) {
                     // basic intersection scoring: count other nearby points in this chunk's polylines
                     for (auto &otherPoly : c.roadPolylines) {
                         for (auto &other : otherPoly) {
-    
-    // Cleanup building meshes
-    for (auto& buildingMesh : c.buildingMeshes) {
-        DestroyPrismMesh(buildingMesh);
-    }
-    c.buildingMeshes.clear();
                             float ddx = other.x - proj.x;
                             float ddz = other.y - proj.y;
                             if (ddx*ddx + ddz*ddz <= intersectionRadius * intersectionRadius) ++score;
@@ -388,11 +371,11 @@ static void destroyChunk(Chunk& c) {
     c.buildingVAO = c.buildingVBO = c.buildingEBO = 0;
     c.buildingIndexCount = 0;
     
-    // Cleanup building meshes
-    for (auto& buildingMesh : c.buildingMeshes) {
-        DestroyPrismMesh(buildingMesh);
+    // Cleanup building polygon meshes
+    for (auto& polygonMesh : c.buildingPolygonMeshes) {
+        DestroyPolygonMesh(polygonMesh);
     }
-    c.buildingMeshes.clear();
+    c.buildingPolygonMeshes.clear();
 }
 
 void UpdateTerrain(const glm::vec3& cameraPos) {
@@ -488,22 +471,6 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             glUniform3f(colorLoc, Config::Building::COLOR_R / 255.0f, Config::Building::COLOR_G / 255.0f, Config::Building::COLOR_B / 255.0f);
             glBindVertexArray(c.buildingVAO);
             glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
-        }
-        
-        // Render 3D buildings (prisms)
-        if (buildingsProgram != 0) {
-            glUseProgram(buildingsProgram);
-            GLint colorLoc = glGetUniformLocation(buildingsProgram, "uColor");
-            glUniform3f(colorLoc, Config::Building::COLOR_R / 255.0f, Config::Building::COLOR_G / 255.0f, Config::Building::COLOR_B / 255.0f);
-            
-            for (const auto& buildingMesh : c.buildingMeshes) {
-                if (buildingMesh.mesh.VAO != 0 && buildingMesh.mesh.indexCount > 0) {
-                    GLint loc = glGetUniformLocation(buildingsProgram, "uMVP");
-                    glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-                    glBindVertexArray(buildingMesh.mesh.VAO);
-                    glDrawElements(GL_TRIANGLES, buildingMesh.mesh.indexCount, GL_UNSIGNED_INT, 0);
-                }
-            }
         }
     }
 

@@ -1,95 +1,89 @@
 #include "mesh.h"
-#include <cmath>
 #include <vector>
 
-
-PrismMesh CreatePrismMesh(float centerX, float centerY, float centerZ, float baseRadius, float height) {
-    // Create triangular base points
-    std::vector<float> basePoints;
-    for (int i = 0; i < 3; ++i) {
-        float ang = (float)i / 3.0f * 2.0f * M_PI;
-        basePoints.push_back(baseRadius * cos(ang));
-        basePoints.push_back(baseRadius * sin(ang));
-    }
+PrismMesh CreatePrismMeshFromPolygon(const float* vertices, size_t vertexCount,
+                                      float centerX, float centerY, float centerZ, 
+                                      float height) {
+    PrismMesh prismMesh;
     
-    return CreatePrismMeshFromPolygon(basePoints.data(), 3, centerX, centerY, centerZ, height);
-}
-
-PrismMesh CreatePrismMeshFromPolygon(const float* polygonPoints, int numPoints, float centerX, float centerY, float centerZ, float height) {
-    PrismMesh out;
-    
-    if (numPoints < 3) {
+    if (vertexCount < 3) {
         // Invalid polygon, return empty mesh
-        out.triangleCount = 0;
-        out.mesh.VAO = 0;
-        out.mesh.VBO = 0;
-        out.mesh.EBO = 0;
-        out.mesh.vertexCount = 0;
-        out.mesh.indexCount = 0;
-        return out;
-    }
-
-    float yBottom = centerY - height * 0.5f;
-    float yTop = centerY + height * 0.5f;
-
-    // Create vertices: bottom polygon, then top polygon
-    std::vector<float> vertices;
-    vertices.reserve(numPoints * 2 * 3);
-    
-    // Bottom vertices
-    for (int i = 0; i < numPoints; ++i) {
-        vertices.push_back(polygonPoints[i * 2] + centerX);
-        vertices.push_back(yBottom);
-        vertices.push_back(polygonPoints[i * 2 + 1] + centerZ);
+        prismMesh.mesh.VAO = 0;
+        prismMesh.mesh.VBO = 0;
+        prismMesh.mesh.EBO = 0;
+        prismMesh.mesh.vertexCount = 0;
+        prismMesh.mesh.indexCount = 0;
+        prismMesh.triangleCount = 0;
+        return prismMesh;
     }
     
-    // Top vertices
-    for (int i = 0; i < numPoints; ++i) {
-        vertices.push_back(polygonPoints[i * 2] + centerX);
-        vertices.push_back(yTop);
-        vertices.push_back(polygonPoints[i * 2 + 1] + centerZ);
+    float halfHeight = height * 0.5f;
+    
+    // Create vertices for both top and bottom faces
+    std::vector<float> vertices3D;
+    vertices3D.reserve(vertexCount * 2 * 3);
+    
+    // Bottom face vertices (centerY - halfHeight)
+    for (size_t i = 0; i < vertexCount; ++i) {
+        vertices3D.push_back(centerX + vertices[i * 2]);       // x
+        vertices3D.push_back(centerY - halfHeight);             // y (bottom)
+        vertices3D.push_back(centerZ + vertices[i * 2 + 1]);    // z
     }
-
-    // Create indices
+    
+    // Top face vertices (centerY + halfHeight)
+    for (size_t i = 0; i < vertexCount; ++i) {
+        vertices3D.push_back(centerX + vertices[i * 2]);       // x
+        vertices3D.push_back(centerY + halfHeight);             // y (top)
+        vertices3D.push_back(centerZ + vertices[i * 2 + 1]);    // z
+    }
+    
     std::vector<unsigned int> indices;
     
-    // Side faces (2 triangles per edge)
-    for (int i = 0; i < numPoints; ++i) {
-        int next = (i + 1) % numPoints;
-        int bottomCurr = i;
-        int bottomNext = next;
-        int topCurr = i + numPoints;
-        int topNext = next + numPoints;
+    // Bottom face (fan triangulation, facing down)
+    for (size_t i = 1; i < vertexCount - 1; ++i) {
+        indices.push_back(0);
+        indices.push_back(i + 1);
+        indices.push_back(i);
+    }
+    
+    // Top face (fan triangulation, facing up)
+    unsigned int topOffset = vertexCount;
+    for (size_t i = 1; i < vertexCount - 1; ++i) {
+        indices.push_back(topOffset);
+        indices.push_back(topOffset + i);
+        indices.push_back(topOffset + i + 1);
+    }
+    
+    // Side faces (quads as two triangles each)
+    for (size_t i = 0; i < vertexCount; ++i) {
+        size_t next = (i + 1) % vertexCount;
+        
+        unsigned int bottomCurrent = i;
+        unsigned int bottomNext = next;
+        unsigned int topCurrent = vertexCount + i;
+        unsigned int topNext = vertexCount + next;
         
         // First triangle of quad
-        indices.push_back(bottomCurr);
+        indices.push_back(bottomCurrent);
+        indices.push_back(topCurrent);
         indices.push_back(bottomNext);
-        indices.push_back(topNext);
         
         // Second triangle of quad
+        indices.push_back(bottomNext);
+        indices.push_back(topCurrent);
         indices.push_back(topNext);
-        indices.push_back(topCurr);
-        indices.push_back(bottomCurr);
     }
     
-    // Bottom cap (fan triangulation from first vertex)
-    for (int i = 1; i < numPoints - 1; ++i) {
-        indices.push_back(0);
-        indices.push_back(i);
-        indices.push_back(i + 1);
-    }
+    prismMesh.triangleCount = indices.size() / 3;
     
-    // Top cap (fan triangulation from first vertex, reverse winding)
-    for (int i = 1; i < numPoints - 1; ++i) {
-        indices.push_back(numPoints);
-        indices.push_back(numPoints + i + 1);
-        indices.push_back(numPoints + i);
-    }
+    prismMesh.mesh = CreateTriangulateMesh(
+        vertices3D.data(),
+        vertices3D.size() * sizeof(float),
+        indices.data(),
+        indices.size()
+    );
     
-    out.triangleCount = indices.size() / 3;
-    out.mesh = CreateTriangulateMesh(vertices.data(), vertices.size() * sizeof(float), 
-                                     indices.data(), indices.size());
-    return out;
+    return prismMesh;
 }
 
 void DestroyPrismMesh(const PrismMesh& mesh) {

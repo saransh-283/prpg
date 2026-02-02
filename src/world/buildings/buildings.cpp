@@ -70,24 +70,7 @@ static std::vector<glm::vec2> generate_t_shape(int width, int height, int seed) 
     };
 }
 
-// Generate an irregular polygon building
-static std::vector<glm::vec2> generate_irregular_polygon(int width, int height, int seed) {
-    int num_sides = 5 + static_cast<int>(deterministic_unit(seed, 0, 0) * 3);
-    
-    std::vector<glm::vec2> points;
-    for (int i = 0; i < num_sides; ++i) {
-        float angle = (2.0f * M_PI * i) / num_sides;
-        double r_hash = deterministic_unit(seed, i, 0);
-        float radius_x = (width / 2.0f) * (0.6f + r_hash * 0.4f);
-        float radius_y = (height / 2.0f) * (0.6f + r_hash * 0.4f);
-        
-        float x = (width / 2.0f) + radius_x * std::cos(angle);
-        float y = (height / 2.0f) + radius_y * std::sin(angle);
-        points.push_back(glm::vec2(x, y));
-    }
-    
-    return points;
-}
+
 
 // Point in polygon test using ray casting
 static bool point_in_polygon(const glm::vec2& point, const std::vector<glm::vec2>& polygon) {
@@ -309,10 +292,8 @@ std::vector<BuildingShape> generate_buildings_grid(std::vector<std::vector<int>>
             building_shape = generate_rectangle_shape(building_width, building_height);
         } else if (shape_hash < Config::Building::L_SHAPE_PROBABILITY) {
             building_shape = generate_l_shape(building_width, building_height, seed + i);
-        } else if (shape_hash < Config::Building::T_SHAPE_PROBABILITY) {
-            building_shape = generate_t_shape(building_width, building_height, seed + i);
         } else {
-            building_shape = generate_irregular_polygon(building_width, building_height, seed + i);
+            building_shape = generate_t_shape(building_width, building_height, seed + i);
         }
         
         // Try to place the building

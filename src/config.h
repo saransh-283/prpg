@@ -129,8 +129,7 @@ namespace Building {
     // Shape probabilities
     constexpr float RECTANGLE_PROBABILITY = 0.4f;  // 40% rectangles
     constexpr float L_SHAPE_PROBABILITY = 0.7f;    // 30% L-shapes (cumulative)
-    constexpr float T_SHAPE_PROBABILITY = 0.85f;   // 15% T-shapes (cumulative)
-    // Remaining 15% are irregular polygons
+    constexpr float T_SHAPE_PROBABILITY = 1.0f;    // 30% T-shapes (cumulative)
     
     // Rendering color (RGB values 0-255)
     constexpr int COLOR_R = 180;             // Building red component
