@@ -299,7 +299,27 @@ std::vector<BuildingShape> generate_buildings_grid(std::vector<std::vector<int>>
         // Try to place the building
         if (try_place_building(grid, center_x, center_y, building_shape)) {
             BuildingShape bs;
-            bs.points = building_shape;
+            // Store points in chunk-grid coordinates (translated), so downstream systems
+            // can associate per-cell BUILDING pixels with a specific building + height.
+            float min_x = building_shape[0].x, max_x = building_shape[0].x;
+            float min_y = building_shape[0].y, max_y = building_shape[0].y;
+            for (const auto& p : building_shape) {
+                min_x = std::min(min_x, p.x);
+                max_x = std::max(max_x, p.x);
+                min_y = std::min(min_y, p.y);
+                max_y = std::max(max_y, p.y);
+            }
+
+            float half_w = (max_x - min_x) / 2.0f;
+            float half_h = (max_y - min_y) / 2.0f;
+
+            bs.points.reserve(building_shape.size());
+            for (const auto& p : building_shape) {
+                bs.points.push_back(glm::vec2(
+                    center_x - half_w + p.x,
+                    center_y - half_h + p.y
+                ));
+            }
             bs.height = height_3d;
             buildings.push_back(bs);
         }

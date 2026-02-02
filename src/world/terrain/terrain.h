@@ -31,6 +31,10 @@ void CleanupTerrain();
 // Query terrain height at world (x, z)
 float SampleTerrainHeight(float x, float z);
 
+// True if a circle at (x,z) overlaps any generated building footprint.
+// Note: buildings only exist inside generated chunks; outside that area this returns false.
+bool CollidesWithBuilding(float x, float z, float radius);
+
 // Convert a world-space XZ position to chunk coordinates (cx, cz)
 void WorldToChunk(float x, float z, int &out_cx, int &out_cz);
 

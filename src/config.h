@@ -153,14 +153,15 @@ namespace LLM {
 // ============================================================================
 namespace Player {
     constexpr float MOUSE_SENSITIVITY = 0.12f;  // Mouse look sensitivity multiplier
-    constexpr float MOVE_SPEED = 25.0f;          // Player movement speed in units per second
+    constexpr float MOVE_SPEED = 15.0f;          // Player movement speed in units per second
     constexpr float GRAVITY = -9.81f;           // Gravity acceleration (m/s²)
+    constexpr float COLLISION_RADIUS = 0.45f;   // Player horizontal collision radius (world units)
 }
 
 namespace Camera {
     constexpr float NEAR_PLANE = 0.1f;          // Near clipping plane distance
     constexpr float FAR_PLANE = 1000.0f;        // Far clipping plane distance
-    constexpr float HEIGHT_OFFSET = 2.0f;       // Camera/player height above terrain
+    constexpr float HEIGHT_OFFSET = 5.0f;       // Camera/player height above terrain
     constexpr float FOV = 60.0f;                // Field of view in degrees
 }
 

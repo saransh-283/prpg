@@ -42,22 +42,35 @@ void Player::HandleKeyboard(const Uint8* keyboardState, float deltaTime)
         horizontalFront = glm::vec3(cos(glm::radians(yaw)), 0.0f, sin(glm::radians(yaw)));
     }
     
-    // WASD movement using horizontal direction
-    if (keyboardState[SDL_SCANCODE_W]) {
-        cameraPos += horizontalFront * moveSpeed * deltaTime;
-    }
-    if (keyboardState[SDL_SCANCODE_S]) {
-        cameraPos -= horizontalFront * moveSpeed * deltaTime;
-    }
-    
+    // Build movement delta first, then resolve collisions.
+    glm::vec3 delta(0.0f);
+
+    if (keyboardState[SDL_SCANCODE_W]) delta += horizontalFront;
+    if (keyboardState[SDL_SCANCODE_S]) delta -= horizontalFront;
+
     // Right vector for strafing (also horizontal)
     glm::vec3 right = glm::normalize(glm::cross(cameraFront, cameraUp));
-    if (keyboardState[SDL_SCANCODE_A]) {
-        cameraPos -= right * moveSpeed * deltaTime;
+    if (keyboardState[SDL_SCANCODE_A]) delta -= right;
+    if (keyboardState[SDL_SCANCODE_D]) delta += right;
+
+    if (glm::length(delta) < 0.0001f) return;
+    delta = glm::normalize(glm::vec3(delta.x, 0.0f, delta.z)) * moveSpeed * deltaTime;
+
+    const float r = Config::Player::COLLISION_RADIUS;
+    glm::vec3 newPos = cameraPos;
+
+    // Slide-style resolution: try X then Z.
+    glm::vec3 tryX = glm::vec3(cameraPos.x + delta.x, cameraPos.y, cameraPos.z);
+    if (!CollidesWithBuilding(tryX.x, tryX.z, r)) {
+        newPos.x = tryX.x;
     }
-    if (keyboardState[SDL_SCANCODE_D]) {
-        cameraPos += right * moveSpeed * deltaTime;
+
+    glm::vec3 tryZ = glm::vec3(newPos.x, cameraPos.y, cameraPos.z + delta.z);
+    if (!CollidesWithBuilding(tryZ.x, tryZ.z, r)) {
+        newPos.z = tryZ.z;
     }
+
+    cameraPos = newPos;
 }
 
 void Player::HandleMouseMotion(float xrel, float yrel)

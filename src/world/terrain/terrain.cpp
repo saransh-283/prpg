@@ -199,6 +199,170 @@ static void createMeshFromGrid(Chunk& c, int roadType, GLuint& VAO, GLuint& VBO,
     }
 }
 
+static bool pointInPolygon2D(const glm::vec2& point, const std::vector<glm::vec2>& polygon) {
+    int n = static_cast<int>(polygon.size());
+    if (n < 3) return false;
+    bool inside = false;
+    float x = point.x;
+    float y = point.y;
+    float p1x = polygon[0].x;
+    float p1y = polygon[0].y;
+    for (int i = 1; i <= n; ++i) {
+        float p2x = polygon[i % n].x;
+        float p2y = polygon[i % n].y;
+        if (y > std::min(p1y, p2y)) {
+            if (y <= std::max(p1y, p2y)) {
+                if (x <= std::max(p1x, p2x)) {
+                    float xinters;
+                    if (p1y != p2y) {
+                        xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x;
+                    } else {
+                        xinters = p1x;
+                    }
+                    if (p1x == p2x || x <= xinters) {
+                        inside = !inside;
+                    }
+                }
+            }
+        }
+        p1x = p2x;
+        p1y = p2y;
+    }
+    return inside;
+}
+
+static void createBuildingMeshFromGrid(Chunk& c, GLuint& VAO, GLuint& VBO, GLuint& EBO, int& indexCount) {
+    std::vector<float> vertices;
+    std::vector<unsigned int> indices;
+
+    // Build a per-cell height grid by rasterizing generated building polygons.
+    // roadGrid marks BUILDING cells, but does not store heights; BuildingShape does.
+    std::vector<std::vector<float>> heightGrid(g_chunkSize, std::vector<float>(g_chunkSize, 0.0f));
+    for (const auto& building : c.buildings) {
+        if (building.points.size() < 3) continue;
+
+        float minX = building.points[0].x;
+        float maxX = building.points[0].x;
+        float minY = building.points[0].y;
+        float maxY = building.points[0].y;
+        for (const auto& p : building.points) {
+            minX = std::min(minX, p.x);
+            maxX = std::max(maxX, p.x);
+            minY = std::min(minY, p.y);
+            maxY = std::max(maxY, p.y);
+        }
+
+        int x0 = std::max(0, static_cast<int>(std::floor(minX)));
+        int x1 = std::min(g_chunkSize - 1, static_cast<int>(std::ceil(maxX)));
+        int z0 = std::max(0, static_cast<int>(std::floor(minY)));
+        int z1 = std::min(g_chunkSize - 1, static_cast<int>(std::ceil(maxY)));
+
+        for (int z = z0; z <= z1; ++z) {
+            for (int x = x0; x <= x1; ++x) {
+                if (c.roadGrid[z][x] != BUILDING) continue;
+                // Test cell center in grid coordinates.
+                glm::vec2 p(static_cast<float>(x) + 0.5f, static_cast<float>(z) + 0.5f);
+                if (pointInPolygon2D(p, building.points)) {
+                    heightGrid[z][x] = std::max(heightGrid[z][x], building.height);
+                }
+            }
+        }
+    }
+
+    auto pushVertex = [&](float x, float y, float z) {
+        vertices.push_back(x);
+        vertices.push_back(y);
+        vertices.push_back(z);
+    };
+
+    auto addQuad = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c_, const glm::vec3& d) {
+        unsigned int baseIdx = static_cast<unsigned int>(vertices.size() / 3);
+        pushVertex(a.x, a.y, a.z);
+        pushVertex(b.x, b.y, b.z);
+        pushVertex(c_.x, c_.y, c_.z);
+        pushVertex(d.x, d.y, d.z);
+        // Two triangles: (a,c,b) and (b,c,d) to match the existing terrain winding.
+        indices.push_back(baseIdx + 0);
+        indices.push_back(baseIdx + 2);
+        indices.push_back(baseIdx + 1);
+        indices.push_back(baseIdx + 1);
+        indices.push_back(baseIdx + 2);
+        indices.push_back(baseIdx + 3);
+    };
+
+    for (int z = 0; z < g_chunkSize - 1; ++z) {
+        for (int x = 0; x < g_chunkSize - 1; ++x) {
+            if (c.roadGrid[z][x] != BUILDING) continue;
+
+            float h = heightGrid[z][x];
+            if (h <= 0.0f) {
+                // Fallback if we couldn't associate this BUILDING cell to a BuildingShape.
+                h = Config::Building::ROAD_MIN_HEIGHT;
+            }
+
+            int i00 = (z + 0) * g_chunkSize + (x + 0);
+            int i10 = (z + 0) * g_chunkSize + (x + 1);
+            int i01 = (z + 1) * g_chunkSize + (x + 0);
+            int i11 = (z + 1) * g_chunkSize + (x + 1);
+
+            glm::vec3 v00(c.terrainVertices[i00 * 3], c.terrainVertices[i00 * 3 + 1], c.terrainVertices[i00 * 3 + 2]);
+            glm::vec3 v10(c.terrainVertices[i10 * 3], c.terrainVertices[i10 * 3 + 1], c.terrainVertices[i10 * 3 + 2]);
+            glm::vec3 v01(c.terrainVertices[i01 * 3], c.terrainVertices[i01 * 3 + 1], c.terrainVertices[i01 * 3 + 2]);
+            glm::vec3 v11(c.terrainVertices[i11 * 3], c.terrainVertices[i11 * 3 + 1], c.terrainVertices[i11 * 3 + 2]);
+
+            // Base (ground) face.
+            addQuad(v00, v10, v01, v11);
+
+            // Top face.
+            glm::vec3 t00(v00.x, v00.y + h, v00.z);
+            glm::vec3 t10(v10.x, v10.y + h, v10.z);
+            glm::vec3 t01(v01.x, v01.y + h, v01.z);
+            glm::vec3 t11(v11.x, v11.y + h, v11.z);
+            addQuad(t00, t10, t01, t11);
+
+            // Side faces: emit only on the boundary of BUILDING regions.
+            bool northOpen = (z == 0) || (c.roadGrid[z - 1][x] != BUILDING);
+            bool southOpen = (z >= g_chunkSize - 2) || (c.roadGrid[z + 1][x] != BUILDING);
+            bool westOpen = (x == 0) || (c.roadGrid[z][x - 1] != BUILDING);
+            bool eastOpen = (x >= g_chunkSize - 2) || (c.roadGrid[z][x + 1] != BUILDING);
+
+            if (northOpen) {
+                // Edge from v00->v10.
+                addQuad(v00, v10, t00, t10);
+            }
+            if (southOpen) {
+                // Edge from v01->v11.
+                addQuad(v01, v11, t01, t11);
+            }
+            if (westOpen) {
+                // Edge from v00->v01.
+                addQuad(v00, v01, t00, t01);
+            }
+            if (eastOpen) {
+                // Edge from v10->v11.
+                addQuad(v10, v11, t10, t11);
+            }
+        }
+    }
+
+    if (!vertices.empty()) {
+        glGenVertexArrays(1, &VAO);
+        glGenBuffers(1, &VBO);
+        glGenBuffers(1, &EBO);
+        glBindVertexArray(VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glBindVertexArray(0);
+        indexCount = static_cast<int>(indices.size());
+    } else {
+        indexCount = 0;
+    }
+}
+
 static void createChunkMesh(Chunk& c) {
     // Generate heightmap and initial grid
     generateHeightmapAndGrid(c);
@@ -211,7 +375,7 @@ static void createChunkMesh(Chunk& c) {
     createMeshFromGrid(c, HIGHWAY, c.highwayVAO, c.highwayVBO, c.highwayEBO, c.highwayIndexCount);
     createMeshFromGrid(c, ROAD, c.roadVAO, c.roadVBO, c.roadEBO, c.roadIndexCount);
     createMeshFromGrid(c, STREET, c.streetVAO, c.streetVBO, c.streetEBO, c.streetIndexCount);
-    createMeshFromGrid(c, BUILDING, c.buildingVAO, c.buildingVBO, c.buildingEBO, c.buildingIndexCount);
+    createBuildingMeshFromGrid(c, c.buildingVAO, c.buildingVBO, c.buildingEBO, c.buildingIndexCount);
     
     // Create 2D polygon meshes for building blueprints
     c.buildingPolygonMeshes.clear();
@@ -488,4 +652,69 @@ void CleanupTerrain() {
 void WorldToChunk(float x, float z, int &out_cx, int &out_cz) {
     out_cx = static_cast<int>(std::floor(x / ((g_chunkSize - 1) * g_scale)));
     out_cz = static_cast<int>(std::floor(z / ((g_chunkSize - 1) * g_scale)));
+}
+
+static bool isBuildingCellGlobal(int cellX, int cellZ) {
+    const int cellsPerChunk = g_chunkSize - 1;
+    if (cellsPerChunk <= 0) return false;
+
+    // Use floor division that behaves for negative coordinates.
+    const int cx = static_cast<int>(std::floor(static_cast<float>(cellX) / static_cast<float>(cellsPerChunk)));
+    const int cz = static_cast<int>(std::floor(static_cast<float>(cellZ) / static_cast<float>(cellsPerChunk)));
+    const int localX = cellX - cx * cellsPerChunk;
+    const int localZ = cellZ - cz * cellsPerChunk;
+
+    if (localX < 0 || localX >= cellsPerChunk || localZ < 0 || localZ >= cellsPerChunk) return false;
+    auto it = g_chunks.find(keyFor(cx, cz));
+    if (it == g_chunks.end()) return false;
+    Chunk& c = it->second;
+    if (c.roadGrid.empty()) return false;
+    if (localZ >= static_cast<int>(c.roadGrid.size())) return false;
+    if (localX >= static_cast<int>(c.roadGrid[localZ].size())) return false;
+    return c.roadGrid[localZ][localX] == BUILDING;
+}
+
+bool CollidesWithBuilding(float x, float z, float radius) {
+    if (g_scale <= 0.0f) return false;
+
+    // Fast path: point test.
+    if (radius <= 0.0f) {
+        const int cellX = static_cast<int>(std::floor(x / g_scale));
+        const int cellZ = static_cast<int>(std::floor(z / g_scale));
+        return isBuildingCellGlobal(cellX, cellZ);
+    }
+
+    const float minX = x - radius;
+    const float maxX = x + radius;
+    const float minZ = z - radius;
+    const float maxZ = z + radius;
+
+    const int minCellX = static_cast<int>(std::floor(minX / g_scale));
+    const int maxCellX = static_cast<int>(std::floor(maxX / g_scale));
+    const int minCellZ = static_cast<int>(std::floor(minZ / g_scale));
+    const int maxCellZ = static_cast<int>(std::floor(maxZ / g_scale));
+
+    const float r2 = radius * radius;
+
+    for (int cz = minCellZ; cz <= maxCellZ; ++cz) {
+        for (int cx = minCellX; cx <= maxCellX; ++cx) {
+            if (!isBuildingCellGlobal(cx, cz)) continue;
+
+            const float cellX0 = static_cast<float>(cx) * g_scale;
+            const float cellZ0 = static_cast<float>(cz) * g_scale;
+            const float cellX1 = cellX0 + g_scale;
+            const float cellZ1 = cellZ0 + g_scale;
+
+            // Closest point on the cell AABB (in XZ) to the circle center.
+            const float closestX = std::clamp(x, cellX0, cellX1);
+            const float closestZ = std::clamp(z, cellZ0, cellZ1);
+            const float dx = x - closestX;
+            const float dz = z - closestZ;
+            if (dx * dx + dz * dz <= r2) {
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
