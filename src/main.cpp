@@ -5,7 +5,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include "config.h"
+#include "core/config.h"
+#include "core/resources.h"
 #include <objects/text/text_renderer.h>
 #include <ui/loading/loading.h>
 #include <objects/models/3d/cube/mesh.h>
@@ -153,7 +154,7 @@ int main(int argc, char *argv[])
     AddLoadingTask([&](){
         // Load simple 3D shader from files
         GLuint program3D_local = 0;
-        bool ok = LoadShaderProgram("src/assets/shaders/simple3d/simple3d.vert", "src/assets/shaders/simple3d/simple3d.frag", program3D_local);
+        bool ok = LoadShaderProgram(Resources::Shaders::Simple3D::VERTEX, Resources::Shaders::Simple3D::FRAGMENT, program3D_local);
         // store program id in a global-like place by setting program3D via pointer in outer scope
         // We'll keep program3D variable and set after tasks finish; for now return ok.
         return ok;
@@ -162,28 +163,28 @@ int main(int argc, char *argv[])
     // Load terrain shader
     AddLoadingTask([&](){
         GLuint terrainShader_local = 0;
-        bool ok = LoadShaderProgram("src/assets/shaders/terrain/terrain.vert", "src/assets/shaders/terrain/terrain.frag", terrainShader_local);
+        bool ok = LoadShaderProgram(Resources::Shaders::Terrain::VERTEX, Resources::Shaders::Terrain::FRAGMENT, terrainShader_local);
         return ok;
     }, "LoadTerrainShader");
 
     // Load roads shader
     AddLoadingTask([&](){
         GLuint roadsShader_local = 0;
-        bool ok = LoadShaderProgram("src/assets/shaders/roads/roads.vert", "src/assets/shaders/roads/roads.frag", roadsShader_local);
+        bool ok = LoadShaderProgram(Resources::Shaders::Roads::VERTEX, Resources::Shaders::Roads::FRAGMENT, roadsShader_local);
         return ok;
     }, "LoadRoadsShader");
 
     // Load highways shader
     AddLoadingTask([&](){
         GLuint highwaysShader_local = 0;
-        bool ok = LoadShaderProgram("src/assets/shaders/highways/highways.vert", "src/assets/shaders/highways/highways.frag", highwaysShader_local);
+        bool ok = LoadShaderProgram(Resources::Shaders::Highways::VERTEX, Resources::Shaders::Highways::FRAGMENT, highwaysShader_local);
         return ok;
     }, "LoadHighwaysShader");
 
     // Load streets shader
     AddLoadingTask([&](){
         GLuint streetsShader_local = 0;
-        bool ok = LoadShaderProgram("src/assets/shaders/streets/streets.vert", "src/assets/shaders/streets/streets.frag", streetsShader_local);
+        bool ok = LoadShaderProgram(Resources::Shaders::Streets::VERTEX, Resources::Shaders::Streets::FRAGMENT, streetsShader_local);
         return ok;
     }, "LoadStreetsShader");
 
@@ -199,6 +200,7 @@ int main(int argc, char *argv[])
 
     // We'll hold the shader program variables and attempt to load them again after loading
     GLuint program3D = 0;
+    GLuint markerSdfProgram = 0;
     GLuint terrainShader = 0;
     GLuint roadsShader = 0;
     GLuint highwaysShader = 0;
@@ -241,37 +243,43 @@ int main(int argc, char *argv[])
     }
 
     // Try loading shader programs
-    if (!LoadShaderProgram("src/assets/shaders/simple3d/simple3d.vert", "src/assets/shaders/simple3d/simple3d.frag", program3D))
+    if (!LoadShaderProgram(Resources::Shaders::Simple3D::VERTEX, Resources::Shaders::Simple3D::FRAGMENT, program3D))
     {
         std::cerr << "Failed to load 3D shader program" << std::endl;
         program3D = 0;
     }
 
-    if (!LoadShaderProgram("src/assets/shaders/terrain/terrain.vert", "src/assets/shaders/terrain/terrain.frag", terrainShader))
+    if (!LoadShaderProgram(Resources::Shaders::UI::MarkerSDF::VERTEX, Resources::Shaders::UI::MarkerSDF::FRAGMENT, markerSdfProgram))
+    {
+        std::cerr << "Failed to load marker SDF shader program" << std::endl;
+        markerSdfProgram = 0;
+    }
+
+    if (!LoadShaderProgram(Resources::Shaders::Terrain::VERTEX, Resources::Shaders::Terrain::FRAGMENT, terrainShader))
     {
         std::cerr << "Failed to load terrain shader program" << std::endl;
         terrainShader = 0;
     }
 
-    if (!LoadShaderProgram("src/assets/shaders/roads/roads.vert", "src/assets/shaders/roads/roads.frag", roadsShader))
+    if (!LoadShaderProgram(Resources::Shaders::Roads::VERTEX, Resources::Shaders::Roads::FRAGMENT, roadsShader))
     {
         std::cerr << "Failed to load roads shader program" << std::endl;
         roadsShader = 0;
     }
 
-    if (!LoadShaderProgram("src/assets/shaders/highways/highways.vert", "src/assets/shaders/highways/highways.frag", highwaysShader))
+    if (!LoadShaderProgram(Resources::Shaders::Highways::VERTEX, Resources::Shaders::Highways::FRAGMENT, highwaysShader))
     {
         std::cerr << "Failed to load highways shader program" << std::endl;
         highwaysShader = 0;
     }
 
-    if (!LoadShaderProgram("src/assets/shaders/streets/streets.vert", "src/assets/shaders/streets/streets.frag", streetsShader))
+    if (!LoadShaderProgram(Resources::Shaders::Streets::VERTEX, Resources::Shaders::Streets::FRAGMENT, streetsShader))
     {
         std::cerr << "Failed to load streets shader program" << std::endl;
         streetsShader = 0;
     }
 
-    if (!LoadShaderProgram("src/assets/shaders/buildings/buildings.vert", "src/assets/shaders/buildings/buildings.frag", buildingsShader))
+    if (!LoadShaderProgram(Resources::Shaders::Buildings::VERTEX, Resources::Shaders::Buildings::FRAGMENT, buildingsShader))
     {
         std::cerr << "Failed to load buildings shader program" << std::endl;
         buildingsShader = 0;
@@ -456,9 +464,9 @@ int main(int argc, char *argv[])
                 glm::vec2 mapOffset(0.0f, 0.0f);
                 // We need to track the offset, so we'll pass it through the state
                 // The offset is already tracked internally in map.cpp
-                RenderMap(cameraPos, windowW, windowH, program3D, terrainShader, highwaysShader, roadsShader, streetsShader, buildingsShader, true, glm::vec2(0.0f));
+                RenderMap(cameraPos, cameraFront, windowW, windowH, program3D, markerSdfProgram, terrainShader, highwaysShader, roadsShader, streetsShader, buildingsShader, true, glm::vec2(0.0f));
             } else {
-                RenderMap(cameraPos, windowW, windowH, program3D, terrainShader, highwaysShader, roadsShader, streetsShader, buildingsShader, false, glm::vec2(0.0f));
+                RenderMap(cameraPos, cameraFront, windowW, windowH, program3D, markerSdfProgram, terrainShader, highwaysShader, roadsShader, streetsShader, buildingsShader, false, glm::vec2(0.0f));
             }
         }
 

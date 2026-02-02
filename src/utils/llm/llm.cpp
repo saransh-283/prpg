@@ -1,5 +1,5 @@
 #include "llm.h"
-#include "../../config.h"
+#include "../../core/config.h"
 #include <iostream>
 #include <vector>
 #include <string>

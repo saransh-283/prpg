@@ -1,5 +1,6 @@
 #include "skybox.h"
 #include <utils/shaders/shader_utils.h>
+#include "../core/resources.h"
 #include <glm/gtc/type_ptr.hpp>
 #include <iostream>
 
@@ -57,8 +58,8 @@ namespace Skybox {
 
     bool Initialize() {
         // Load skybox shader
-        if (!LoadShaderProgram("src/assets/shaders/skybox/skybox.vert", 
-                              "src/assets/shaders/skybox/skybox.frag", 
+        if (!LoadShaderProgram(Resources::Shaders::Skybox::VERTEX, 
+                              Resources::Shaders::Skybox::FRAGMENT, 
                               skyboxShader)) {
             std::cerr << "Failed to load skybox shader" << std::endl;
             return false;

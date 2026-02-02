@@ -1,5 +1,6 @@
 #include "deferred_renderer.h"
 #include <utils/shaders/shader_utils.h>
+#include "../core/resources.h"
 #include <glm/gtc/type_ptr.hpp>
 #include <iostream>
 
@@ -135,22 +136,22 @@ namespace DeferredRenderer {
         sun.intensity = 1.2f;
 
         // Load shaders
-        if (!LoadShaderProgram("src/assets/shaders/deferred/geometry.vert", 
-                              "src/assets/shaders/deferred/geometry.frag", 
+        if (!LoadShaderProgram(Resources::Shaders::Deferred::Geometry::VERTEX, 
+                              Resources::Shaders::Deferred::Geometry::FRAGMENT, 
                               geometryShader)) {
             std::cerr << "Failed to load geometry shader" << std::endl;
             return false;
         }
 
-        if (!LoadShaderProgram("src/assets/shaders/deferred/lighting.vert", 
-                              "src/assets/shaders/deferred/lighting.frag", 
+        if (!LoadShaderProgram(Resources::Shaders::Deferred::Lighting::VERTEX, 
+                              Resources::Shaders::Deferred::Lighting::FRAGMENT, 
                               lightingShader)) {
             std::cerr << "Failed to load lighting shader" << std::endl;
             return false;
         }
 
-        if (!LoadShaderProgram("src/assets/shaders/shadow/shadow.vert", 
-                              "src/assets/shaders/shadow/shadow.frag", 
+        if (!LoadShaderProgram(Resources::Shaders::Deferred::Shadow::VERTEX, 
+                              Resources::Shaders::Deferred::Shadow::FRAGMENT, 
                               shadowShader)) {
             std::cerr << "Failed to load shadow shader" << std::endl;
             return false;

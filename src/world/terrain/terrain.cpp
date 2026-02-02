@@ -1,5 +1,5 @@
 #include "terrain.h"
-#include "../../config.h"
+#include "../../core/config.h"
 #include <vector>
 #include <unordered_map>
 #include <cmath>
