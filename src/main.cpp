@@ -352,6 +352,8 @@ int main(int argc, char *argv[])
                 if (e.key.keysym.sym == SDLK_m)
                 {
                     ToggleMap();
+                    // When the map is visible, release mouse; recapture when closing.
+                    player.SetMouseCaptured(!IsMapVisible());
                 }
                 // Zoom in with numpad + or KP_PLUS
                 if (e.key.keysym.sym == SDLK_KP_PLUS)

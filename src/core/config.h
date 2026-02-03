@@ -54,18 +54,25 @@ namespace Highway {
     constexpr float NOISE_STRENGTH = 1.0f;   // Amplitude of directional noise (higher = more variation)
     constexpr int PADDING = 8;               // Extra padding around chunk for seamless generation
     constexpr int SEED = 42;                 // Base seed for highway generation RNG
+
+    // Thickness (in grid-cell radius around the centerline).
+    // Varies smoothly using Perlin noise so thickness doesn't change over short lengths.
+    constexpr float THICKNESS_MIN = 2.5f;
+    constexpr float THICKNESS_MAX = 4.5f;
+    constexpr float THICKNESS_PERLIN_SCALE = 0.0025f; // Lower = longer, smoother changes
+    constexpr float THICKNESS_SMOOTH_ALPHA = 0.03f;   // Exponential smoothing per step
     
     // Rendering color (RGB values 0-255)
-    constexpr int COLOR_R = 153;             // Highway red component
-    constexpr int COLOR_G = 153;             // Highway green component (gray)
-    constexpr int COLOR_B = 153;             // Highway blue component
+    constexpr int COLOR_R = 255;             // Highway red component
+    constexpr int COLOR_G = 0;             // Highway green component (gray)
+    constexpr int COLOR_B = 0;             // Highway blue component
 }
 
 // ============================================================================
 // Road Generation Parameters
 // ============================================================================
 namespace Road {
-    constexpr int NUM_ROADS = 200;           // Number of roads to generate per chunk
+    constexpr int NUM_ROADS = 50;           // Number of roads to generate per chunk
     constexpr int WORM_LENGTH = 800;         // Number of segments in each road polyline
     constexpr float STEP_SIZE = 1.0f;        // Distance between road polyline points (world units)
     constexpr float PERLIN_SCALE = 0.01f;    // Scale factor for direction noise
@@ -75,18 +82,24 @@ namespace Road {
     constexpr int SEED = 42;                 // Base seed for road generation RNG
     constexpr int SEARCH_RADIUS_CHUNKS = 1;  // Chunks to search when finding nearest road
     constexpr float INTERSECTION_RADIUS = 4.0f; // Distance to consider roads as intersecting (world units)
+
+    // Thickness (in grid-cell radius around the centerline).
+    constexpr float THICKNESS_MIN = 1.0f;
+    constexpr float THICKNESS_MAX = 2.0f;
+    constexpr float THICKNESS_PERLIN_SCALE = 0.0030f;
+    constexpr float THICKNESS_SMOOTH_ALPHA = 0.04f;
     
     // Rendering color (RGB values 0-255)
-    constexpr int COLOR_R = 204;             // Road red component
-    constexpr int COLOR_G = 204;             // Road green component (light beige)
-    constexpr int COLOR_B = 153;             // Road blue component
+    constexpr int COLOR_R = 255;             // Road red component
+    constexpr int COLOR_G = 255;             // Road green component (light beige)
+    constexpr int COLOR_B = 0;             // Road blue component
 }
 
 // ============================================================================
 // Street Generation Parameters
 // ============================================================================
 namespace Street {
-    constexpr int NUM_STREETS = 100;         // Number of streets to generate per chunk
+    constexpr int NUM_STREETS = 20;         // Number of streets to generate per chunk
     constexpr int WORM_LENGTH = 400;         // Number of segments in each street polyline
     constexpr float STEP_SIZE = 1.0f;        // Distance between street polyline points (world units)
     constexpr float PERLIN_SCALE = 0.01f;    // Scale factor for direction noise
@@ -95,11 +108,17 @@ namespace Street {
     constexpr int PADDING = 8;               // Extra padding around chunk
     constexpr int SEED = 42;                 // Base seed for street generation RNG
     constexpr float ROAD_SEARCH_RADIUS = 4.0f; // Max distance to search for parent roads (world units)
+
+    // Thickness (in grid-cell radius around the centerline).
+    constexpr float THICKNESS_MIN = 0.5f;
+    constexpr float THICKNESS_MAX = 1.0f;
+    constexpr float THICKNESS_PERLIN_SCALE = 0.0035f;
+    constexpr float THICKNESS_SMOOTH_ALPHA = 0.05f;
     
     // Rendering color (RGB values 0-255)
-    constexpr int COLOR_R = 102;             // Street red component
-    constexpr int COLOR_G = 102;             // Street green component (dark gray)
-    constexpr int COLOR_B = 102;             // Street blue component
+    constexpr int COLOR_R = 0;             // Street red component
+    constexpr int COLOR_G = 0;             // Street green component (dark gray)
+    constexpr int COLOR_B = 255;             // Street blue component
 }
 
 // ============================================================================

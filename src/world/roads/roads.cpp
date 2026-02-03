@@ -7,6 +7,39 @@
 #include <algorithm>
 #include <noise/noise.h>
 #include <glm/glm.hpp>
+#include "../../core/config.h"
+
+static inline float lerp(float a, float b, float t) {
+    return a + (b - a) * t;
+}
+
+static inline float clamp01(float v) {
+    if (v < 0.0f) return 0.0f;
+    if (v > 1.0f) return 1.0f;
+    return v;
+}
+
+static void paint_disc_if(std::vector<std::vector<int>>& grid, int cx, int cy, float radius, int value, int only_if_value) {
+    if (radius <= 0.0f) return;
+    int h = static_cast<int>(grid.size());
+    if (h <= 0) return;
+    int w = static_cast<int>(grid[0].size());
+
+    int r = static_cast<int>(std::ceil(radius));
+    float r2 = radius * radius;
+    for (int dy = -r; dy <= r; ++dy) {
+        int y = cy + dy;
+        if (y < 0 || y >= h) continue;
+        for (int dx = -r; dx <= r; ++dx) {
+            int x = cx + dx;
+            if (x < 0 || x >= w) continue;
+            if (static_cast<float>(dx * dx + dy * dy) > r2) continue;
+            if (grid[y][x] == only_if_value) {
+                grid[y][x] = value;
+            }
+        }
+    }
+}
 
 // 64-bit splitmix hash to produce deterministic pseudo-random numbers from integers
 static uint64_t splitmix64(uint64_t x) {
@@ -163,6 +196,9 @@ std::vector<std::vector<int>> generate_roads_grid(const std::vector<std::vector<
     // Set up world coordinates and noise
     noise::module::Perlin perlin;
     perlin.SetSeed(seed);
+
+    noise::module::Perlin thicknessPerlin;
+    thicknessPerlin.SetSeed(seed + 10007);
     
     int wx = chunk_x * chunk_size - padding;
     int wy = chunk_y * chunk_size - padding;
@@ -186,6 +222,8 @@ std::vector<std::vector<int>> generate_roads_grid(const std::vector<std::vector<
             
             double x = start_x;
             double y = start_y;
+
+            float smoothRadius = (Config::Road::THICKNESS_MIN + Config::Road::THICKNESS_MAX) * 0.5f;
             
             // Generate worm path
             for (int j = 0; j < worm_length; ++j) {
@@ -195,9 +233,16 @@ std::vector<std::vector<int>> generate_roads_grid(const std::vector<std::vector<
                 
                 // Check bounds and mark as road if within grid
                 if (grid_x >= 0 && grid_x < grid_size && grid_y >= 0 && grid_y < grid_size) {
-                    if (result_grid[grid_y][grid_x] == 0) { // Only mark terrain as road
-                        result_grid[grid_y][grid_x] = 2; // Road type
-                    }
+                    // Smooth thickness from Perlin (map [-1,1] -> [0,1]) and exponential smoothing.
+                    double n = thicknessPerlin.GetValue(x * Config::Road::THICKNESS_PERLIN_SCALE,
+                                                       y * Config::Road::THICKNESS_PERLIN_SCALE,
+                                                       0.0);
+                    float t = clamp01(static_cast<float>((n + 1.0) * 0.5));
+                    float targetRadius = lerp(Config::Road::THICKNESS_MIN, Config::Road::THICKNESS_MAX, t);
+                    smoothRadius = lerp(smoothRadius, targetRadius, Config::Road::THICKNESS_SMOOTH_ALPHA);
+
+                    // Only paint onto terrain (0). This preserves highway priority and avoids overwriting.
+                    paint_disc_if(result_grid, grid_x, grid_y, smoothRadius, 2, 0);
                 }
                 
                 // Get next direction from Perlin noise

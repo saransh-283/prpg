@@ -101,6 +101,9 @@ namespace Models {
     // Add model paths as needed
     // Example:
     // constexpr const char* PLAYER_MODEL = "src/assets/models/player.gltf";
+
+    // NPC base model
+    constexpr const char* NPC_BASE_MODEL = "src/assets/objects/models/glb/pill.glb";
 }
 
 // ============================================================================

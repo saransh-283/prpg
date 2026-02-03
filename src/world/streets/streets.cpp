@@ -8,6 +8,39 @@
 #include <iostream>
 #include <noise/noise.h>
 #include <glm/glm.hpp>
+#include "../../core/config.h"
+
+static inline float lerp(float a, float b, float t) {
+    return a + (b - a) * t;
+}
+
+static inline float clamp01(float v) {
+    if (v < 0.0f) return 0.0f;
+    if (v > 1.0f) return 1.0f;
+    return v;
+}
+
+static void paint_disc_if(std::vector<std::vector<int>>& grid, int cx, int cy, float radius, int value, int only_if_value) {
+    if (radius <= 0.0f) return;
+    int h = static_cast<int>(grid.size());
+    if (h <= 0) return;
+    int w = static_cast<int>(grid[0].size());
+
+    int r = static_cast<int>(std::ceil(radius));
+    float r2 = radius * radius;
+    for (int dy = -r; dy <= r; ++dy) {
+        int y = cy + dy;
+        if (y < 0 || y >= h) continue;
+        for (int dx = -r; dx <= r; ++dx) {
+            int x = cx + dx;
+            if (x < 0 || x >= w) continue;
+            if (static_cast<float>(dx * dx + dy * dy) > r2) continue;
+            if (grid[y][x] == only_if_value) {
+                grid[y][x] = value;
+            }
+        }
+    }
+}
 
 // 64-bit splitmix hash to produce deterministic pseudo-random numbers from integers
 static uint64_t splitmix64(uint64_t x) {
@@ -205,6 +238,9 @@ std::vector<std::vector<int>> generate_streets_grid(const std::vector<std::vecto
     // Set up world coordinates and noise
     noise::module::Perlin perlin;
     perlin.SetSeed(seed); // Different seed for streets
+
+    noise::module::Perlin thicknessPerlin;
+    thicknessPerlin.SetSeed(seed + 10007);
     
     int wx = chunk_x * chunk_size - padding;
     int wy = chunk_y * chunk_size - padding;
@@ -269,6 +305,8 @@ std::vector<std::vector<int>> generate_streets_grid(const std::vector<std::vecto
         double x = start_x + std::cos(street_direction) * offset_distance;
         double y = start_y + std::sin(street_direction) * offset_distance;
         int street_length = worm_length / 3; // Streets are shorter
+
+        float smoothRadius = (Config::Street::THICKNESS_MIN + Config::Street::THICKNESS_MAX) * 0.5f;
         
         for (int j = 0; j < street_length; ++j) {
             // Convert world coordinates to grid coordinates
@@ -278,11 +316,19 @@ std::vector<std::vector<int>> generate_streets_grid(const std::vector<std::vecto
             // Check bounds and avoid roads
             if (street_grid_x >= 0 && street_grid_x < grid_size && 
                 street_grid_y >= 0 && street_grid_y < grid_size) {
-                if (result_grid[street_grid_y][street_grid_x] == 0) { // Only mark terrain as street
-                    result_grid[street_grid_y][street_grid_x] = 3; // Street type
-                } else if (result_grid[street_grid_y][street_grid_x] == 2) {
-                    break; // Stop if we hit another road
+                if (result_grid[street_grid_y][street_grid_x] == 2) {
+                    break; // Stop if we hit a road
                 }
+
+                // Smooth thickness from Perlin and paint onto terrain only.
+                double n = thicknessPerlin.GetValue(x * Config::Street::THICKNESS_PERLIN_SCALE,
+                                                   y * Config::Street::THICKNESS_PERLIN_SCALE,
+                                                   0.0);
+                float t = clamp01(static_cast<float>((n + 1.0) * 0.5));
+                float targetRadius = lerp(Config::Street::THICKNESS_MIN, Config::Street::THICKNESS_MAX, t);
+                smoothRadius = lerp(smoothRadius, targetRadius, Config::Street::THICKNESS_SMOOTH_ALPHA);
+
+                paint_disc_if(result_grid, street_grid_x, street_grid_y, smoothRadius, 3, 0);
             } else {
                 break; // Out of bounds
             }

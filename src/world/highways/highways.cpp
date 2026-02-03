@@ -7,6 +7,39 @@
 #include <algorithm>
 #include <noise/noise.h>
 #include <glm/glm.hpp>
+#include "../../core/config.h"
+
+static inline float lerp(float a, float b, float t) {
+    return a + (b - a) * t;
+}
+
+static inline float clamp01(float v) {
+    if (v < 0.0f) return 0.0f;
+    if (v > 1.0f) return 1.0f;
+    return v;
+}
+
+static void paint_disc_if(std::vector<std::vector<int>>& grid, int cx, int cy, float radius, int value, int only_if_value) {
+    if (radius <= 0.0f) return;
+    int h = static_cast<int>(grid.size());
+    if (h <= 0) return;
+    int w = static_cast<int>(grid[0].size());
+
+    int r = static_cast<int>(std::ceil(radius));
+    float r2 = radius * radius;
+    for (int dy = -r; dy <= r; ++dy) {
+        int y = cy + dy;
+        if (y < 0 || y >= h) continue;
+        for (int dx = -r; dx <= r; ++dx) {
+            int x = cx + dx;
+            if (x < 0 || x >= w) continue;
+            if (static_cast<float>(dx * dx + dy * dy) > r2) continue;
+            if (grid[y][x] == only_if_value) {
+                grid[y][x] = value;
+            }
+        }
+    }
+}
 
 // 64-bit splitmix hash to produce deterministic pseudo-random numbers from integers
 static uint64_t splitmix64(uint64_t x) {
@@ -90,7 +123,64 @@ std::vector<std::vector<int>> generate_highways_grid(const std::vector<std::vect
                                                     float step_size, float perlin_scale,
                                                     int seed, int grid_angles,
                                                     float noise_strength) {
-    // For now, just return the input grid unchanged (no highways)
-    // TODO: Implement actual highway generation logic from notebook
-    return terrain_grid;
+    // Create a copy of the input grid
+    std::vector<std::vector<int>> result_grid = terrain_grid;
+    int grid_size = static_cast<int>(result_grid.size());
+
+    noise::module::Perlin perlin;
+    perlin.SetSeed(seed);
+
+    // Separate Perlin for thickness to keep it independent of direction.
+    noise::module::Perlin thicknessPerlin;
+    thicknessPerlin.SetSeed(seed + 10007);
+
+    int wx = chunk_x * chunk_size - padding;
+    int wy = chunk_y * chunk_size - padding;
+    int size = chunk_size + 2 * padding;
+
+    // Deterministic placement across chunks
+    int cell_spacing = std::max(16, padding / 2);
+    int gx_min = static_cast<int>(std::floor((double)wx / cell_spacing));
+    int gx_max = static_cast<int>(std::floor((double)(wx + size) / cell_spacing));
+    int gy_min = static_cast<int>(std::floor((double)wy / cell_spacing));
+    int gy_max = static_cast<int>(std::floor((double)(wy + size) / cell_spacing));
+
+    int count = 0;
+    for (int gx = gx_min; gx <= gx_max && count < num_highways; ++gx) {
+        for (int gy = gy_min; gy <= gy_max && count < num_highways; ++gy) {
+            // Deterministic start position within cell
+            double u = deterministic_unit(gx, gy, seed + 0);
+            double v = deterministic_unit(gx, gy, seed + 1);
+            double x = gx * (double)cell_spacing + u * (double)cell_spacing;
+            double y = gy * (double)cell_spacing + v * (double)cell_spacing;
+
+            float smoothRadius = (Config::Highway::THICKNESS_MIN + Config::Highway::THICKNESS_MAX) * 0.5f;
+
+            for (int j = 0; j < worm_length; ++j) {
+                int grid_x = static_cast<int>((x - wx) * grid_size / size);
+                int grid_y = static_cast<int>((y - wy) * grid_size / size);
+
+                if (grid_x >= 0 && grid_x < grid_size && grid_y >= 0 && grid_y < grid_size) {
+                    // Smooth thickness from Perlin (map [-1,1] -> [0,1]).
+                    double n = thicknessPerlin.GetValue(x * Config::Highway::THICKNESS_PERLIN_SCALE,
+                                                       y * Config::Highway::THICKNESS_PERLIN_SCALE,
+                                                       0.0);
+                    float t = clamp01(static_cast<float>((n + 1.0) * 0.5));
+                    float targetRadius = lerp(Config::Highway::THICKNESS_MIN, Config::Highway::THICKNESS_MAX, t);
+                    smoothRadius = lerp(smoothRadius, targetRadius, Config::Highway::THICKNESS_SMOOTH_ALPHA);
+
+                    // Paint disc onto terrain only (0). Highways are type 1.
+                    paint_disc_if(result_grid, grid_x, grid_y, smoothRadius, 1, 0);
+                }
+
+                float angle = quantized_angle((float)x, (float)y, perlin_scale, grid_angles, noise_strength, perlin);
+                x += std::cos(angle) * step_size;
+                y += std::sin(angle) * step_size;
+            }
+
+            ++count;
+        }
+    }
+
+    return result_grid;
 }

@@ -290,15 +290,22 @@ static void createBuildingMeshFromGrid(Chunk& c, GLuint& VAO, GLuint& VBO, GLuin
         indices.push_back(baseIdx + 3);
     };
 
+    auto heightAt = [&](int gx, int gz) -> float {
+        if (gx < 0 || gz < 0 || gx >= g_chunkSize || gz >= g_chunkSize) return 0.0f;
+        if (c.roadGrid[gz][gx] != BUILDING) return 0.0f;
+        float hh = heightGrid[gz][gx];
+        if (hh <= 0.0f) {
+            // Keep consistent with the main loop fallback.
+            hh = Config::Building::ROAD_MIN_HEIGHT;
+        }
+        return hh;
+    };
+
     for (int z = 0; z < g_chunkSize - 1; ++z) {
         for (int x = 0; x < g_chunkSize - 1; ++x) {
             if (c.roadGrid[z][x] != BUILDING) continue;
 
-            float h = heightGrid[z][x];
-            if (h <= 0.0f) {
-                // Fallback if we couldn't associate this BUILDING cell to a BuildingShape.
-                h = Config::Building::ROAD_MIN_HEIGHT;
-            }
+            float h = heightAt(x, z);
 
             int i00 = (z + 0) * g_chunkSize + (x + 0);
             int i10 = (z + 0) * g_chunkSize + (x + 1);
@@ -320,27 +327,47 @@ static void createBuildingMeshFromGrid(Chunk& c, GLuint& VAO, GLuint& VBO, GLuin
             glm::vec3 t11(v11.x, v11.y + h, v11.z);
             addQuad(t00, t10, t01, t11);
 
-            // Side faces: emit only on the boundary of BUILDING regions.
-            bool northOpen = (z == 0) || (c.roadGrid[z - 1][x] != BUILDING);
-            bool southOpen = (z >= g_chunkSize - 2) || (c.roadGrid[z + 1][x] != BUILDING);
-            bool westOpen = (x == 0) || (c.roadGrid[z][x - 1] != BUILDING);
-            bool eastOpen = (x >= g_chunkSize - 2) || (c.roadGrid[z][x + 1] != BUILDING);
+            // Side faces:
+            // - Always emit along the outer boundary (neighbor not BUILDING).
+            // - Also emit vertical walls where adjacent BUILDING cells have a lower height.
+            //   This prevents holes when two buildings touch but have different heights.
+            const float eps = 1e-4f;
 
-            if (northOpen) {
-                // Edge from v00->v10.
-                addQuad(v00, v10, t00, t10);
+            // North edge (neighbor z-1)
+            {
+                float hn = heightAt(x, z - 1);
+                if (h > hn + eps) {
+                    glm::vec3 b00(v00.x, v00.y + hn, v00.z);
+                    glm::vec3 b10(v10.x, v10.y + hn, v10.z);
+                    addQuad(b00, b10, t00, t10);
+                }
             }
-            if (southOpen) {
-                // Edge from v01->v11.
-                addQuad(v01, v11, t01, t11);
+            // South edge (neighbor z+1)
+            {
+                float hs = heightAt(x, z + 1);
+                if (h > hs + eps) {
+                    glm::vec3 b01(v01.x, v01.y + hs, v01.z);
+                    glm::vec3 b11(v11.x, v11.y + hs, v11.z);
+                    addQuad(b01, b11, t01, t11);
+                }
             }
-            if (westOpen) {
-                // Edge from v00->v01.
-                addQuad(v00, v01, t00, t01);
+            // West edge (neighbor x-1)
+            {
+                float hw = heightAt(x - 1, z);
+                if (h > hw + eps) {
+                    glm::vec3 b00(v00.x, v00.y + hw, v00.z);
+                    glm::vec3 b01(v01.x, v01.y + hw, v01.z);
+                    addQuad(b00, b01, t00, t01);
+                }
             }
-            if (eastOpen) {
-                // Edge from v10->v11.
-                addQuad(v10, v11, t10, t11);
+            // East edge (neighbor x+1)
+            {
+                float he = heightAt(x + 1, z);
+                if (h > he + eps) {
+                    glm::vec3 b10(v10.x, v10.y + he, v10.z);
+                    glm::vec3 b11(v11.x, v11.y + he, v11.z);
+                    addQuad(b10, b11, t10, t11);
+                }
             }
         }
     }

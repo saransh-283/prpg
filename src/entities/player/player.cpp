@@ -91,12 +91,7 @@ void Player::HandleMouseMotion(float xrel, float yrel)
 
 void Player::HandleKeyPress(SDL_Keycode key)
 {
-    switch (key) {
-        case SDLK_m:
-            // Toggle mouse capture
-            SetMouseCaptured(!mouseCaptured);
-            break;
-    }
+    (void)key;
 }
 
 void Player::SetMouseCaptured(bool captured)
