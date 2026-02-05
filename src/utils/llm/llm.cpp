@@ -4,11 +4,95 @@
 #include <vector>
 #include <string>
 #include <cstdlib>
+#include <thread>
+#include <mutex>
+#include <atomic>
 
 static llama_model* g_model = nullptr;
 static llama_context* g_ctx = nullptr;
 static const llama_vocab* g_vocab = nullptr;
 static llama_sampler* g_sampler_basic = nullptr;
+
+static std::mutex g_llm_mutex;
+static std::thread g_loader_thread;
+static std::atomic<bool> g_loading{false};
+static std::atomic<bool> g_ready{false};
+static std::string g_last_error;
+
+static void set_last_error(const std::string& msg) {
+    std::lock_guard<std::mutex> lock(g_llm_mutex);
+    g_last_error = msg;
+}
+
+static void clear_last_error() {
+    std::lock_guard<std::mutex> lock(g_llm_mutex);
+    g_last_error.clear();
+}
+
+static void free_state_locked() {
+    if (g_sampler_basic) {
+        llama_sampler_free(g_sampler_basic);
+        g_sampler_basic = nullptr;
+    }
+    if (g_ctx) {
+        llama_free(g_ctx);
+        g_ctx = nullptr;
+    }
+    if (g_model) {
+        llama_model_free(g_model);
+        g_model = nullptr;
+    }
+    g_vocab = nullptr;
+    g_ready = false;
+}
+
+static bool load_state(const std::string& model_path, int ngl, int n_ctx,
+                       llama_model*& out_model,
+                       llama_context*& out_ctx,
+                       const llama_vocab*& out_vocab,
+                       llama_sampler*& out_sampler,
+                       std::string& out_error) {
+    out_model = nullptr;
+    out_ctx = nullptr;
+    out_vocab = nullptr;
+    out_sampler = nullptr;
+    out_error.clear();
+
+    // load dynamic backends
+    ggml_backend_load_all();
+
+    // --- load model ---
+    llama_model_params model_params = llama_model_default_params();
+    model_params.n_gpu_layers = ngl;
+
+    out_model = llama_model_load_from_file(model_path.c_str(), model_params);
+    if (!out_model) {
+        out_error = std::string("Failed to load model: ") + model_path;
+        return false;
+    }
+    out_vocab = llama_model_get_vocab(out_model);
+
+    // initialize the context
+    llama_context_params ctx_params = llama_context_default_params();
+    ctx_params.n_ctx = n_ctx;
+    ctx_params.n_batch = n_ctx;
+
+    out_ctx = llama_init_from_model(out_model, ctx_params);
+    if (!out_ctx) {
+        llama_model_free(out_model);
+        out_model = nullptr;
+        out_error = "Failed to create context";
+        return false;
+    }
+
+    // initialize the sampler
+    out_sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(out_sampler, llama_sampler_init_min_p(Config::LLM::MIN_P, 1));
+    llama_sampler_chain_add(out_sampler, llama_sampler_init_temp(Config::LLM::TEMPERATURE));
+    llama_sampler_chain_add(out_sampler, llama_sampler_init_dist(Config::LLM::DEFAULT_SEED));
+
+    return true;
+}
 
 static std::string format_chat(const std::string& user_prompt) {
     std::string templated =
@@ -21,43 +105,105 @@ static std::string format_chat(const std::string& user_prompt) {
 }
 
 bool initialize_llm(const std::string& model_path, int ngl, int n_ctx) {
-    // load dynamic backends
-    ggml_backend_load_all();
+    wait_for_llm_load();
+    clear_last_error();
 
-    // --- load model ---
-    llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = ngl;
-
-    g_model = llama_model_load_from_file(model_path.c_str(), model_params);
-    if (!g_model) {
-        std::cerr << "Failed to load model: " << model_path << "\n";
-        return false;
-    }
-    g_vocab = llama_model_get_vocab(g_model);
-
-    // initialize the context
-    llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = n_ctx;
-    ctx_params.n_batch = n_ctx;
-
-    g_ctx = llama_init_from_model(g_model, ctx_params);
-    if (!g_ctx) {
-        std::cerr << "Failed to create context\n";
-        llama_model_free(g_model);
-        g_model = nullptr;
+    llama_model* model = nullptr;
+    llama_context* ctx = nullptr;
+    const llama_vocab* vocab = nullptr;
+    llama_sampler* sampler = nullptr;
+    std::string err;
+    const bool ok = load_state(model_path, ngl, n_ctx, model, ctx, vocab, sampler, err);
+    if (!ok) {
+        set_last_error(err);
+        std::cerr << err << "\n";
         return false;
     }
 
-    // initialize the sampler
-    g_sampler_basic = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    llama_sampler_chain_add(g_sampler_basic, llama_sampler_init_min_p(Config::LLM::MIN_P, 1));
-    llama_sampler_chain_add(g_sampler_basic, llama_sampler_init_temp(Config::LLM::TEMPERATURE));
-    llama_sampler_chain_add(g_sampler_basic, llama_sampler_init_dist(Config::LLM::DEFAULT_SEED));
+    {
+        std::lock_guard<std::mutex> lock(g_llm_mutex);
+        free_state_locked();
+        g_model = model;
+        g_ctx = ctx;
+        g_vocab = vocab;
+        g_sampler_basic = sampler;
+        g_ready = true;
+    }
 
     return true;
 }
 
+bool start_llm_background_load(const std::string& model_path, int ngl, int n_ctx) {
+    if (g_ready.load()) return false;
+    bool expected = false;
+    if (!g_loading.compare_exchange_strong(expected, true)) {
+        // already loading
+        return false;
+    }
+
+    clear_last_error();
+
+    // If a previous loader thread finished but wasn't joined yet, join it now.
+    if (g_loader_thread.joinable()) {
+        g_loader_thread.join();
+    }
+
+    g_loader_thread = std::thread([model_path, ngl, n_ctx]() {
+        llama_model* model = nullptr;
+        llama_context* ctx = nullptr;
+        const llama_vocab* vocab = nullptr;
+        llama_sampler* sampler = nullptr;
+        std::string err;
+
+        const bool ok = load_state(model_path, ngl, n_ctx, model, ctx, vocab, sampler, err);
+        if (!ok) {
+            set_last_error(err);
+            std::cerr << "[LLM] " << err << "\n";
+            g_loading = false;
+            g_ready = false;
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_llm_mutex);
+            free_state_locked();
+            g_model = model;
+            g_ctx = ctx;
+            g_vocab = vocab;
+            g_sampler_basic = sampler;
+            g_ready = true;
+        }
+
+        g_loading = false;
+        std::cout << "[LLM] Model loaded in background." << std::endl;
+    });
+
+    return true;
+}
+
+bool is_llm_loading() {
+    return g_loading.load();
+}
+
+bool is_llm_ready() {
+    return g_ready.load();
+}
+
+std::string llm_last_error() {
+    std::lock_guard<std::mutex> lock(g_llm_mutex);
+    return g_last_error;
+}
+
+void wait_for_llm_load() {
+    if (g_loader_thread.joinable()) {
+        g_loader_thread.join();
+    }
+    // If the thread finished, g_loading may already be false; enforce it.
+    g_loading = false;
+}
+
 std::string generate_from_prompt(const std::string& prompt) {
+    std::lock_guard<std::mutex> lock(g_llm_mutex);
     if (!g_ctx || !g_model || !g_vocab || !g_sampler_basic) return "";
 
     // Don't modify the caller's argument (it's a const ref). Create a formatted prompt
@@ -116,16 +262,8 @@ std::string generate_from_prompt(const std::string& prompt) {
 }
 
 void shutdown_llm() {
-    if (g_sampler_basic) {
-        llama_sampler_free(g_sampler_basic);
-        g_sampler_basic = nullptr;
-    }
-    if (g_ctx) {
-        llama_free(g_ctx);
-        g_ctx = nullptr;
-    }
-    if (g_model) {
-        llama_model_free(g_model);
-        g_model = nullptr;
-    }
+    wait_for_llm_load();
+
+    std::lock_guard<std::mutex> lock(g_llm_mutex);
+    free_state_locked();
 }

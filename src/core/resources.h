@@ -110,6 +110,9 @@ namespace Models {
 
     // NPC base model
     constexpr const char* NPC_BASE_MODEL = "src/assets/objects/models/glb/pill.glb";
+
+    // LLM model (GGUF) – loaded asynchronously after the loading screen.
+    constexpr const char* LLM_DEFAULT_MODEL = "models/Meta-Llama-3-8B-Instruct.Q5_K_M.gguf";
 }
 
 // ============================================================================

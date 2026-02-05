@@ -9,419 +9,6 @@ static GLuint textVAO = 0;
 static GLuint textVBO = 0;
 static GLuint textShader = 0;
 
-// Simple 5x7 bitmap font patterns
-BitmapChar GetCharacterBitmap(char c) {
-    BitmapChar bitmap;
-    bitmap.width = 5;
-    bitmap.height = 7;
-    bitmap.pixels.resize(35, false);
-    
-    switch(c) {
-        case 'A':
-            bitmap.pixels = {
-                0,1,1,1,0,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,1,1,1,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                0,0,0,0,0
-            };
-            break;
-        case 'B':
-            bitmap.pixels = {
-                1,1,1,1,0,
-                1,0,0,0,1,
-                1,1,1,1,0,
-                1,1,1,1,0,
-                1,0,0,0,1,
-                1,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case 'C':
-            bitmap.pixels = {
-                0,1,1,1,0,
-                1,0,0,0,1,
-                1,0,0,0,0,
-                1,0,0,0,0,
-                1,0,0,0,1,
-                0,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case 'D':
-            bitmap.pixels = {
-                1,1,1,1,0,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case 'E':
-            bitmap.pixels = {
-                1,1,1,1,1,
-                1,0,0,0,0,
-                1,1,1,1,0,
-                1,1,1,1,0,
-                1,0,0,0,0,
-                1,1,1,1,1,
-                0,0,0,0,0
-            };
-            break;
-        case 'F':
-            bitmap.pixels = {
-                1,1,1,1,1,
-                1,0,0,0,0,
-                1,1,1,1,0,
-                1,1,1,1,0,
-                1,0,0,0,0,
-                1,0,0,0,0,
-                0,0,0,0,0
-            };
-            break;
-        case 'G':
-            bitmap.pixels = {
-                0,1,1,1,0,
-                1,0,0,0,1,
-                1,0,0,0,0,
-                1,0,1,1,1,
-                1,0,0,0,1,
-                0,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case 'H':
-            bitmap.pixels = {
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,1,1,1,1,
-                1,1,1,1,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                0,0,0,0,0
-            };
-            break;
-        case 'I':
-            bitmap.pixels = {
-                1,1,1,1,1,
-                0,0,1,0,0,
-                0,0,1,0,0,
-                0,0,1,0,0,
-                0,0,1,0,0,
-                1,1,1,1,1,
-                0,0,0,0,0
-            };
-            break;
-        case 'J':
-            bitmap.pixels = {
-                0,0,0,0,1,
-                0,0,0,0,1,
-                0,0,0,0,1,
-                0,0,0,0,1,
-                1,0,0,0,1,
-                0,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case 'K':
-            bitmap.pixels = {
-                1,0,0,0,1,
-                1,0,0,1,0,
-                1,0,1,0,0,
-                1,1,0,0,0,
-                1,0,1,0,0,
-                1,0,0,1,1,
-                0,0,0,0,0
-            };
-            break;
-        case 'L':
-            bitmap.pixels = {
-                1,0,0,0,0,
-                1,0,0,0,0,
-                1,0,0,0,0,
-                1,0,0,0,0,
-                1,0,0,0,0,
-                1,1,1,1,1,
-                0,0,0,0,0
-            };
-            break;
-        case 'M':
-            bitmap.pixels = {
-                1,0,0,0,1,
-                1,1,0,1,1,
-                1,0,1,0,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                0,0,0,0,0
-            };
-            break;
-        case 'N':
-            bitmap.pixels = {
-                1,0,0,0,1,
-                1,1,0,0,1,
-                1,0,1,0,1,
-                1,0,0,1,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                0,0,0,0,0
-            };
-            break;
-        case 'O':
-            bitmap.pixels = {
-                0,1,1,1,0,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                0,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case 'P':
-            bitmap.pixels = {
-                1,1,1,1,0,
-                1,0,0,0,1,
-                1,1,1,1,0,
-                1,0,0,0,0,
-                1,0,0,0,0,
-                1,0,0,0,0,
-                0,0,0,0,0
-            };
-            break;
-        case 'Q':
-            bitmap.pixels = {
-                0,1,1,1,0,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,0,1,0,1,
-                1,0,0,1,1,
-                0,1,1,1,1,
-                0,0,0,0,0
-            };
-            break;
-        case 'R':
-            bitmap.pixels = {
-                1,1,1,1,0,
-                1,0,0,0,1,
-                1,1,1,1,0,
-                1,1,1,0,0,
-                1,0,1,1,0,
-                1,0,0,1,1,
-                0,0,0,0,0
-            };
-            break;
-        case 'S':
-            bitmap.pixels = {
-                0,1,1,1,1,
-                1,0,0,0,0,
-                0,1,1,1,0,
-                0,0,0,0,1,
-                0,0,0,0,1,
-                1,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case 'T':
-            bitmap.pixels = {
-                1,1,1,1,1,
-                0,0,1,0,0,
-                0,0,1,0,0,
-                0,0,1,0,0,
-                0,0,1,0,0,
-                0,0,1,0,0,
-                0,0,0,0,0
-            };
-            break;
-        case 'U':
-            bitmap.pixels = {
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                0,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case 'V':
-            bitmap.pixels = {
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                0,1,0,1,0,
-                0,1,0,1,0,
-                0,0,1,0,0,
-                0,0,0,0,0
-            };
-            break;
-        case 'W':
-            bitmap.pixels = {
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                1,0,1,0,1,
-                1,1,0,1,1,
-                1,0,0,0,1,
-                0,0,0,0,0
-            };
-            break;
-        case 'X':
-            bitmap.pixels = {
-                1,0,0,0,1,
-                0,1,0,1,0,
-                0,0,1,0,0,
-                0,0,1,0,0,
-                0,1,0,1,0,
-                1,0,0,0,1,
-                0,0,0,0,0
-            };
-            break;
-        case 'Y':
-            bitmap.pixels = {
-                1,0,0,0,1,
-                1,0,0,0,1,
-                0,1,0,1,0,
-                0,0,1,0,0,
-                0,0,1,0,0,
-                0,0,1,0,0,
-                0,0,0,0,0
-            };
-            break;
-        case 'Z':
-            bitmap.pixels = {
-                1,1,1,1,1,
-                0,0,0,1,0,
-                0,0,1,0,0,
-                0,1,0,0,0,
-                1,0,0,0,0,
-                1,1,1,1,1,
-                0,0,0,0,0
-            };
-            break;
-        case '0':
-            bitmap.pixels = {
-                0,1,1,1,0,
-                1,0,0,0,1,
-                1,0,0,1,1,
-                1,0,1,0,1,
-                1,1,0,0,1,
-                0,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case '1':
-            bitmap.pixels = {
-                0,0,1,0,0,
-                0,1,1,0,0,
-                0,0,1,0,0,
-                0,0,1,0,0,
-                0,0,1,0,0,
-                1,1,1,1,1,
-                0,0,0,0,0
-            };
-            break;
-        case '2':
-            bitmap.pixels = {
-                0,1,1,1,0,
-                1,0,0,0,1,
-                0,0,0,1,0,
-                0,0,1,0,0,
-                0,1,0,0,0,
-                1,1,1,1,1,
-                0,0,0,0,0
-            };
-            break;
-        case '3':
-            bitmap.pixels = {
-                0,1,1,1,0,
-                1,0,0,0,1,
-                0,0,1,1,0,
-                0,0,1,1,0,
-                1,0,0,0,1,
-                0,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case '4':
-            bitmap.pixels = {
-                0,0,0,1,0,
-                0,0,1,1,0,
-                0,1,0,1,0,
-                1,0,0,1,0,
-                1,1,1,1,1,
-                0,0,0,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case '5':
-            bitmap.pixels = {
-                1,1,1,1,1,
-                1,0,0,0,0,
-                1,1,1,1,0,
-                0,0,0,0,1,
-                1,0,0,0,1,
-                0,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case '6':
-            bitmap.pixels = {
-                0,1,1,1,0,
-                1,0,0,0,0,
-                1,1,1,1,0,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                0,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case '7':
-            bitmap.pixels = {
-                1,1,1,1,1,
-                0,0,0,0,1,
-                0,0,0,1,0,
-                0,0,1,0,0,
-                0,1,0,0,0,
-                1,0,0,0,0,
-                0,0,0,0,0
-            };
-            break;
-        case '8':
-            bitmap.pixels = {
-                0,1,1,1,0,
-                1,0,0,0,1,
-                0,1,1,1,0,
-                0,1,1,1,0,
-                1,0,0,0,1,
-                0,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        case '9':
-            bitmap.pixels = {
-                0,1,1,1,0,
-                1,0,0,0,1,
-                1,0,0,0,1,
-                0,1,1,1,1,
-                0,0,0,0,1,
-                0,1,1,1,0,
-                0,0,0,0,0
-            };
-            break;
-        default:
-            // Space or unknown character
-            bitmap.pixels.assign(35, false);
-            break;
-    }
-    
-    return bitmap;
-}
-
 void InitTextOverlay() {
     // Simple text shader for 2D overlay
     const char* vertexShaderSource = R"(
@@ -439,8 +26,9 @@ void InitTextOverlay() {
     const char* fragmentShaderSource = R"(
         #version 330 core
         out vec4 FragColor;
+        uniform vec4 uColor;
         void main() {
-            FragColor = vec4(1.0, 1.0, 1.0, 1.0); // White text
+            FragColor = uColor;
         }
     )";
     
@@ -476,17 +64,58 @@ void RenderTextOverlay(const std::string& text, float x, float y, int windowWidt
     
     // Disable depth testing for overlay
     glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
     
     glUseProgram(textShader);
-    glUniform2f(glGetUniformLocation(textShader, "screenSize"), (float)windowWidth, (float)windowHeight);
+    const GLint screenSizeLoc = glGetUniformLocation(textShader, "screenSize");
+    const GLint positionLoc = glGetUniformLocation(textShader, "position");
+    const GLint colorLoc = glGetUniformLocation(textShader, "uColor");
+
+    if (screenSizeLoc >= 0) glUniform2f(screenSizeLoc, (float)windowWidth, (float)windowHeight);
     
     glBindVertexArray(textVAO);
     
     // Character sizing
     float pixelSize = 2.0f;  // Size of each pixel in the bitmap
     float charSpacing = 7.0f * pixelSize;  // Space between characters
+
+    // --- background for readability ---
+    // Measure approximate bounds based on the fixed advance used by the renderer.
+    int maxBitmapHeight = 0;
+    for (char c : upperText) {
+        BitmapChar bitmap = GetCharacterBitmap(c);
+        maxBitmapHeight = std::max(maxBitmapHeight, bitmap.height);
+    }
+
+    const float textW = (float)upperText.size() * charSpacing;
+    const float textH = (float)maxBitmapHeight * pixelSize;
+    const float pad = 4.0f;
+
+    if (textW > 0.0f && textH > 0.0f) {
+        const float bgW = textW + pad * 2.0f;
+        const float bgH = textH + pad * 2.0f;
+
+        float bgVertices[] = {
+            0.0f,  0.0f,
+            bgW,   0.0f,
+            bgW,   bgH,
+
+            0.0f,  0.0f,
+            bgW,   bgH,
+            0.0f,  bgH
+        };
+
+        if (colorLoc >= 0) glUniform4f(colorLoc, 0.0f, 0.0f, 0.0f, 0.55f);
+        if (positionLoc >= 0) glUniform2f(positionLoc, x - pad, y - pad);
+
+        glBindBuffer(GL_ARRAY_BUFFER, textVBO);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(bgVertices), bgVertices);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
     
     float currentX = x;
+
+    if (colorLoc >= 0) glUniform4f(colorLoc, 1.0f, 1.0f, 1.0f, 1.0f);
     
     for (char c : upperText) {
         BitmapChar bitmap = GetCharacterBitmap(c);
@@ -509,7 +138,7 @@ void RenderTextOverlay(const std::string& text, float x, float y, int windowWidt
                         0.0f,      pixelSize    // Top-left
                     };
                     
-                    glUniform2f(glGetUniformLocation(textShader, "position"), pixelX, pixelY);
+                    if (positionLoc >= 0) glUniform2f(positionLoc, pixelX, pixelY);
                     
                     glBindBuffer(GL_ARRAY_BUFFER, textVBO);
                     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(vertices), vertices);

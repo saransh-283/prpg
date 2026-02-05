@@ -14,6 +14,8 @@
 #include <iostream>
 #include <random>
 
+#include <assets/objects/label/label.h>
+
 #include <algorithm>
 #include <limits>
 
@@ -58,6 +60,26 @@ float ComputeTransformedMinY(const glm::mat4& localTransform, const glm::vec3& a
     }
     return std::isfinite(minY) ? minY : 0.0f;
 }
+
+float ComputeTransformedMaxY(const glm::mat4& localTransform, const glm::vec3& aabbMin, const glm::vec3& aabbMax) {
+    const glm::vec3 corners[8] = {
+        {aabbMin.x, aabbMin.y, aabbMin.z},
+        {aabbMax.x, aabbMin.y, aabbMin.z},
+        {aabbMin.x, aabbMax.y, aabbMin.z},
+        {aabbMax.x, aabbMax.y, aabbMin.z},
+        {aabbMin.x, aabbMin.y, aabbMax.z},
+        {aabbMax.x, aabbMin.y, aabbMax.z},
+        {aabbMin.x, aabbMax.y, aabbMax.z},
+        {aabbMax.x, aabbMax.y, aabbMax.z},
+    };
+
+    float maxY = -std::numeric_limits<float>::infinity();
+    for (const auto& c : corners) {
+        const glm::vec4 p = localTransform * glm::vec4(c, 1.0f);
+        maxY = std::max(maxY, p.y);
+    }
+    return std::isfinite(maxY) ? maxY : 0.0f;
+}
 }
 
 NpcSystem::NpcSystem() : meshLoaded(false) {}
@@ -86,8 +108,7 @@ bool NpcSystem::Initialize(const glm::vec3& spawnCenter) {
         std::cerr << "Failed to load NPC model: " << Resources::Models::NPC_BASE_MODEL << std::endl;
         return false;
     }
-
-    GenerateDeterministicSpawns(spawnCenter);
+    (void)spawnCenter; // spawning is now done per-chunk
     return true;
 }
 
@@ -98,6 +119,17 @@ void NpcSystem::Cleanup() {
     }
     npcs.clear();
     palette01.clear();
+    spawnedChunkKeys.clear();
+}
+
+void NpcSystem::SpawnForChunk(int cx, int cz) {
+    if (!meshLoaded) return;
+
+    const long long k = keyFor(cx, cz);
+    if (spawnedChunkKeys.find(k) != spawnedChunkKeys.end()) return;
+    spawnedChunkKeys.insert(k);
+
+    GenerateDeterministicSpawnsForChunk(cx, cz);
 }
 
 bool NpcSystem::LoadParams() {
@@ -224,6 +256,15 @@ void NpcSystem::GenerateDeterministicSpawns(const glm::vec3& spawnCenter) {
         inst.color01 = palette01[ci];
         inst.heightScale = hScale;
         inst.widthScale = wScale;
+        inst.name = "Villager";
+
+        if (mesh.hasAabb) {
+            const glm::mat4 local = baseModel * glm::scale(glm::mat4(1.0f), glm::vec3(wScale, hScale, wScale));
+            const float maxY = ComputeTransformedMaxY(local, mesh.aabbMin, mesh.aabbMax);
+            inst.headLabelOffsetY = maxY + 0.25f;
+        } else {
+            inst.headLabelOffsetY = 1.6f;
+        }
         npcs.push_back(inst);
         spawned++;
     }
@@ -254,11 +295,142 @@ void NpcSystem::GenerateDeterministicSpawns(const glm::vec3& spawnCenter) {
         inst.color01 = palette01[ci];
         inst.heightScale = hScale;
         inst.widthScale = wScale;
+        inst.name = "Villager";
+
+        if (mesh.hasAabb) {
+            const glm::mat4 local = baseModel * glm::scale(glm::mat4(1.0f), glm::vec3(wScale, hScale, wScale));
+            const float maxY = ComputeTransformedMaxY(local, mesh.aabbMin, mesh.aabbMax);
+            inst.headLabelOffsetY = maxY + 0.25f;
+        } else {
+            inst.headLabelOffsetY = 1.6f;
+        }
         npcs.push_back(inst);
         spawned++;
     }
 
     std::cout << "NPCs spawned: " << npcs.size() << std::endl;
+}
+
+void NpcSystem::GenerateDeterministicSpawnsForChunk(int cx, int cz) {
+    if (palette01.empty()) return;
+
+    // Chunk world-space bounds match terrain generation: (chunkSize-1) * vertexSpacing.
+    const float chunkWorldSize = (float)(Config::World::CHUNK_SIZE - 1) * Config::World::VERTEX_SPACING;
+    const float originX = (float)cx * chunkWorldSize;
+    const float originZ = (float)cz * chunkWorldSize;
+
+    // Keep some padding from the edges.
+    const float pad = 2.0f * Config::World::VERTEX_SPACING;
+    const float minX = originX + pad;
+    const float maxX = originX + chunkWorldSize - pad;
+    const float minZ = originZ + pad;
+    const float maxZ = originZ + chunkWorldSize - pad;
+    if (!(maxX > minX && maxZ > minZ)) return;
+
+    // Deterministic seed per chunk.
+    const uint32_t seedA = (uint32_t)Config::World::PERLIN_SEED;
+    const uint32_t seedB = (uint32_t)(cx ^ (cx >> 16));
+    const uint32_t seedC = (uint32_t)(cz ^ (cz >> 16));
+    const uint32_t seedD = 0x4E504343u; // 'NPCC'
+    std::seed_seq seq{seedA, seedB, seedC, seedD};
+    std::mt19937 rng(seq);
+
+    // Variable NPC count per chunk (deterministic).
+    constexpr int kMaxNpcPerChunk = 4;
+    std::uniform_int_distribution<int> countDist(0, kMaxNpcPerChunk);
+    const int targetCount = countDist(rng);
+    if (targetCount <= 0) return;
+
+    // Independent deterministic stream for scale selection.
+    const uint32_t seedScale = seedD ^ 0x5343414Cu; // 'SCAL'
+    std::seed_seq scaleSeq{seedA, seedB, seedC, seedScale};
+    std::mt19937 scaleRng(scaleSeq);
+
+    std::uniform_real_distribution<float> xDist(minX, maxX);
+    std::uniform_real_distribution<float> zDist(minZ, maxZ);
+    std::uniform_real_distribution<float> unitDist(0.0f, 1.0f);
+    std::uniform_int_distribution<int> colorDist(0, (int)palette01.size() - 1);
+
+    std::uniform_real_distribution<float> heightDist(heightScaleMin, heightScaleMax);
+    std::uniform_real_distribution<float> widthDist(widthScaleMin, widthScaleMax);
+
+    // Same base transform as in rendering, so grounding matches visuals.
+    glm::mat4 baseModel(1.0f);
+    baseModel = glm::rotate(baseModel, glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    baseModel = glm::scale(baseModel, glm::vec3(0.22f));
+
+    constexpr float kMinSeparation = 2.0f;
+    constexpr float kHeightOffset = 0.28f;
+
+    auto tooClose = [&](const glm::vec3& p) {
+        for (const auto& n : npcs) {
+            if (glm::distance(glm::vec2(p.x, p.z), glm::vec2(n.position.x, n.position.z)) < kMinSeparation) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    int spawned = 0;
+    int attempts = 0;
+    const int maxAttempts = targetCount * 60;
+    while (spawned < targetCount && attempts < maxAttempts) {
+        attempts++;
+
+        const float x = xDist(rng);
+        const float z = zDist(rng);
+        if (CollidesWithBuilding(x, z, 0.45f)) continue;
+
+        const float hoverJitter = 0.12f * unitDist(rng);
+        const float hScale = heightDist(scaleRng);
+        const float wScale = widthDist(scaleRng);
+
+        float y = SampleTerrainHeight(x, z) + kHeightOffset + hoverJitter;
+        if (mesh.hasAabb) {
+            const glm::mat4 local = baseModel * glm::scale(glm::mat4(1.0f), glm::vec3(wScale, hScale, wScale));
+            const float minY = ComputeTransformedMinY(local, mesh.aabbMin, mesh.aabbMax);
+            y += std::max(0.0f, -minY);
+        }
+
+        glm::vec3 p(x, y, z);
+        if (tooClose(p)) continue;
+
+        const int ci = colorDist(rng);
+        NpcInstance inst;
+        inst.position = p;
+        inst.color01 = palette01[ci];
+        inst.heightScale = hScale;
+        inst.widthScale = wScale;
+        inst.name = "Villager";
+
+        if (mesh.hasAabb) {
+            const glm::mat4 local = baseModel * glm::scale(glm::mat4(1.0f), glm::vec3(wScale, hScale, wScale));
+            const float maxY = ComputeTransformedMaxY(local, mesh.aabbMin, mesh.aabbMax);
+            inst.headLabelOffsetY = maxY + 0.25f;
+        } else {
+            inst.headLabelOffsetY = 1.6f;
+        }
+
+        npcs.push_back(inst);
+        spawned++;
+    }
+}
+
+void NpcSystem::RenderNameLabels(const glm::vec3& playerPos, const glm::mat4& proj, const glm::mat4& view, int windowW, int windowH) const {
+    if (!meshLoaded) return;
+
+    // Show labels only when close enough to the player.
+    constexpr float kShowRadius = 7.0f;
+    constexpr float kShowRadiusSq = kShowRadius * kShowRadius;
+
+    for (const auto& npc : npcs) {
+        const glm::vec3 d = npc.position - playerPos;
+        const float distSq = d.x * d.x + d.z * d.z;
+        if (distSq > kShowRadiusSq) continue;
+
+        const glm::vec3 labelPos = npc.position + glm::vec3(0.0f, npc.headLabelOffsetY, 0.0f);
+        HudLabel::RenderWorldLabel(npc.name, labelPos, proj, view, windowW, windowH);
+    }
 }
 
 void NpcSystem::RenderInstancesCommon(GLuint shaderProgram, int modelLoc, const glm::mat4& baseModel) const {

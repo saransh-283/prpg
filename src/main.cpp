@@ -14,6 +14,9 @@
 #include <objects/models/3d/custom/mesh.h>
 #include <objects/models/3d/sphere/mesh.h>
 #include <utils/shaders/shader_utils.h>
+// LLM (loaded asynchronously after the loading screen)
+#include <utils/llm/llm.h>
+#include <filesystem>
 // Wireframe toggle for triangulated meshes
 #include <utils/triangulate/mesh.h>
 // Infinite terrain
@@ -151,12 +154,22 @@ int main(int argc, char *argv[])
     NpcSystem npcSystem;
     bool npcInitialized = false;
 
+    // Initialize NPC resources early so per-chunk spawn tasks can run.
+    AddLoadingTask([&](){
+        npcInitialized = npcSystem.Initialize(initialCameraPos);
+        return npcInitialized;
+    }, "InitNPCs");
+
     for (int dz = -initialViewRadius; dz <= initialViewRadius; ++dz) {
         for (int dx = -initialViewRadius; dx <= initialViewRadius; ++dx) {
             int cx = centerCx + dx;
             int cz = centerCz + dz;
             // terrain mesh generation per chunk
             AddLoadingTask([cx, cz](){ return GenerateTerrainChunk(cx, cz); }, "GenChunk");
+
+            // Deterministically spawn NPCs for this chunk (variable count per chunk).
+            // Runs after terrain so height sampling is valid.
+            AddLoadingTask([cx, cz, &npcSystem](){ npcSystem.SpawnForChunk(cx, cz); return true; }, "SpawnNPCs");
             // road generation for the same chunk as a separate task; after generating
             // roads check if we can determine a spawn from already-generated data
             AddLoadingTask([cx, cz, &initialCameraPos](){
@@ -196,12 +209,6 @@ int main(int argc, char *argv[])
         initialCameraPos.y = SampleTerrainHeight(spawn.x, spawn.y) + Config::Player::EYE_HEIGHT;
         return true;
     }, "DetermineSpawn");
-
-    // Initialize NPCs once we have a deterministic spawn position.
-    AddLoadingTask([&](){
-        npcInitialized = npcSystem.Initialize(initialCameraPos);
-        return npcInitialized;
-    }, "InitNPCs");
 
     AddLoadingTask([&](){
         return LoadShaderProgram(Resources::Shaders::Simple3D::VERTEX, Resources::Shaders::Simple3D::FRAGMENT, program3D);
@@ -289,6 +296,27 @@ int main(int argc, char *argv[])
 
         // small sleep to avoid pegging CPU
         SDL_Delay(10);
+    }
+
+    // Kick off LLM model loading in the background after the loading screen.
+    // This avoids blocking startup/gameplay on a heavy GGUF load.
+    {
+        namespace fs = std::filesystem;
+
+        std::string modelPath = Resources::Models::LLM_DEFAULT_MODEL;
+        const std::string fallbackPath = "src/models/Meta-Llama-3-8B-Instruct.Q5_K_M.gguf";
+
+        if (!fs::exists(modelPath) && fs::exists(fallbackPath)) {
+            modelPath = fallbackPath;
+        }
+
+        if (fs::exists(modelPath)) {
+            std::cout << "[LLM] Starting background load: " << modelPath << std::endl;
+            (void)start_llm_background_load(modelPath, Config::LLM::DEFAULT_GPU_LAYERS, Config::LLM::DEFAULT_CONTEXT_SIZE);
+        } else {
+            std::cout << "[LLM] Model not found; skipping background load (tried: "
+                      << Resources::Models::LLM_DEFAULT_MODEL << ", " << fallbackPath << ")" << std::endl;
+        }
     }
 
     // Try loading shader programs
@@ -560,6 +588,9 @@ int main(int argc, char *argv[])
             }
         }
 
+        // NPC HUD labels (unlit, screen-space)
+        npcSystem.RenderNameLabels(player.GetPosition(), proj, view, windowW, windowH);
+
         // Debug overlay (hidden by default)
         RenderDebugOverlay(windowW, windowH, wireframeMode, player.GetPosition());
 
@@ -571,6 +602,9 @@ int main(int argc, char *argv[])
     }
 
     CleanupTextOverlay();
+
+    // Ensure background loader is joined and LLM resources are freed.
+    shutdown_llm();
 
     CleanupDebugOverlay();
 

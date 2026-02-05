@@ -24,6 +24,10 @@ add_executable(${PROJECT_NAME} ${SRC_FILES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# std::thread requires pthreads on most Linux toolchains
+find_package(Threads REQUIRED)
+target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)
+
 # Perlin Roads C++ port
 find_package(unofficial-noise CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} PRIVATE unofficial::noise::noise-static)
