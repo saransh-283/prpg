@@ -1,5 +1,5 @@
 #include "buildings.h"
-#include "../../core/config.h"
+#include <core/config.h>
 #include <cmath>
 #include <cstdint>
 #include <algorithm>

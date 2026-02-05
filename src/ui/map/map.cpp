@@ -1,6 +1,6 @@
 #include "map.h"
-#include "../../core/config.h"
-#include "../../core/resources.h"
+#include <core/config.h>
+#include <core/resources.h>
 
 #include <array>
 #include <cmath>

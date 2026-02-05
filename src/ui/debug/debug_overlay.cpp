@@ -1,5 +1,5 @@
 #include <ui/debug/debug_overlay.h>
-#include "../../core/config.h"
+#include <core/config.h>
 #include <stdio.h>
 #include <objects/text/text_renderer.h>
 #include <world/terrain/terrain.h>

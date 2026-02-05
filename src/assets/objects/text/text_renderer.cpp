@@ -1,5 +1,5 @@
 #include "text_renderer.h"
-#include "utils/shaders/shader_utils.h"
+#include <utils/shaders/shader_utils.h>
 #include <iostream>
 #include <unordered_map>
 #include <algorithm>

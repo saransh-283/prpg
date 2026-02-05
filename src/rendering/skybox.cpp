@@ -1,6 +1,6 @@
 #include "skybox.h"
 #include <utils/shaders/shader_utils.h>
-#include "../core/resources.h"
+#include <core/resources.h>
 #include <glm/gtc/type_ptr.hpp>
 #include <iostream>
 

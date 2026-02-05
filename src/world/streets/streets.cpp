@@ -10,6 +10,41 @@
 #include <glm/glm.hpp>
 #include "../../core/config.h"
 
+// Forward declaration (definition appears later in this file)
+static double deterministic_unit(int64_t a, int64_t b, int64_t c);
+
+static inline float wrap_pi(float a) {
+    while (a > (float)M_PI) a -= 2.0f * (float)M_PI;
+    while (a < -(float)M_PI) a += 2.0f * (float)M_PI;
+    return a;
+}
+
+static inline float angle_diff(float target, float current) {
+    return wrap_pi(target - current);
+}
+
+static inline float rotate_towards(float current, float target, float max_delta) {
+    float d = angle_diff(target, current);
+    if (d > max_delta) d = max_delta;
+    else if (d < -max_delta) d = -max_delta;
+    return wrap_pi(current + d);
+}
+
+static inline float deg2rad(float deg) {
+    return deg * ((float)M_PI / 180.0f);
+}
+
+static inline int pick_steps_range(int minSteps, int maxSteps, int64_t a, int64_t b, int64_t c) {
+    if (minSteps < 1) minSteps = 1;
+    if (maxSteps < minSteps) maxSteps = minSteps;
+    double u = deterministic_unit(a, b, c);
+    int span = maxSteps - minSteps + 1;
+    int v = minSteps + (int)std::floor(u * (double)span);
+    if (v < minSteps) v = minSteps;
+    if (v > maxSteps) v = maxSteps;
+    return v;
+}
+
 static inline float lerp(float a, float b, float t) {
     return a + (b - a) * t;
 }
@@ -131,31 +166,53 @@ static std::vector<glm::vec2> generate_street_worm(float start_x, float start_y,
 
     float x = start_x;
     float y = start_y;
-    float current_angle = initial_angle;
-
-    // Parameters for organic street generation
-    int min_straight_distance = 2;
-    int steps_since_turn = 0;
+    const float maxTurn = deg2rad(Config::Street::MAX_TURN_DEG);
+    const float maxTurnPerStep = deg2rad(Config::Street::MAX_TURN_DEG_PER_STEP);
+    float heading = wrap_pi(initial_angle);
+    bool inBend = false;
+    float bendTarget = heading;
+    int phaseRemaining = 0;
 
     for (int j = 0; j < worm_length; ++j) {
         poly.emplace_back(x, y);
 
-        // Update angle with noise, but less frequently
-        if (steps_since_turn >= min_straight_distance) {
-            float noise_angle = quantized_angle(x, y, perlin_scale * 2.0f, grid_angles, noise_strength, perlin);
+        if (phaseRemaining <= 0) {
+            int64_t xi = (int64_t)std::floor(x);
+            int64_t yi = (int64_t)std::floor(y);
+            int64_t salt = (int64_t)seed + (int64_t)j + (inBend ? 5200 : 7200);
 
-            // Allow turns with reduced noise influence
-            float angle_diff = std::abs(noise_angle - current_angle);
-            if (angle_diff > M_PI / (grid_angles * 3.0f)) {
-                current_angle = noise_angle;
-                steps_since_turn = 0;
+            if (inBend) {
+                inBend = false;
+                phaseRemaining = pick_steps_range(Config::Street::STRAIGHT_MIN_STEPS,
+                                                 Config::Street::STRAIGHT_MAX_STEPS,
+                                                 xi, yi, salt);
+            } else {
+                inBend = true;
+                phaseRemaining = pick_steps_range(Config::Street::BEND_MIN_STEPS,
+                                                 Config::Street::BEND_MAX_STEPS,
+                                                 xi, yi, salt);
+
+                float rawDesired = quantized_angle(x, y, perlin_scale * 2.0f, grid_angles, noise_strength, perlin);
+                float d = angle_diff(rawDesired, heading);
+                if (d > maxTurn) d = maxTurn;
+                else if (d < -maxTurn) d = -maxTurn;
+
+                if (std::abs(d) < deg2rad(2.0f)) {
+                    double s = deterministic_unit(xi, yi, salt + 123);
+                    float forced = std::min(maxTurn, deg2rad(20.0f));
+                    d = (s < 0.5) ? -forced : forced;
+                }
+
+                bendTarget = wrap_pi(heading + d);
             }
         }
 
-        // Move to next position
-        x += std::cos(current_angle) * step_size;
-        y += std::sin(current_angle) * step_size;
-        steps_since_turn++;
+        if (inBend) {
+            heading = rotate_towards(heading, bendTarget, maxTurnPerStep);
+        }
+        x += std::cos(heading) * step_size;
+        y += std::sin(heading) * step_size;
+        phaseRemaining--;
     }
 
     return poly;
@@ -231,9 +288,14 @@ std::vector<std::vector<int>> generate_streets_grid(const std::vector<std::vecto
                                                    float step_size, float perlin_scale,
                                                    int seed, int grid_angles,
                                                    float noise_strength) {
-    // Create a copy of the input grid
-    std::vector<std::vector<int>> result_grid = input_grid;
-    int grid_size = result_grid.size();
+    // Generate into a padded grid for seamless chunk borders, then crop.
+    const int padded_size = chunk_size + 2 * padding;
+    std::vector<std::vector<int>> padded_grid(padded_size, std::vector<int>(padded_size, 0));
+    for (int z = 0; z < chunk_size; ++z) {
+        for (int x = 0; x < chunk_size; ++x) {
+            padded_grid[z + padding][x + padding] = input_grid[z][x];
+        }
+    }
     
     // Set up world coordinates and noise
     noise::module::Perlin perlin;
@@ -242,35 +304,36 @@ std::vector<std::vector<int>> generate_streets_grid(const std::vector<std::vecto
     noise::module::Perlin thicknessPerlin;
     thicknessPerlin.SetSeed(seed + 10007);
     
+    // World-space origin for padded grid (in grid units).
     int wx = chunk_x * chunk_size - padding;
     int wy = chunk_y * chunk_size - padding;
-    int size = chunk_size + 2 * padding;
     
     // Find all road pixels (value 2) to start streets from their edges
     std::vector<std::pair<int, int>> road_pixels;
-    for (int y = 0; y < grid_size; ++y) {
-        for (int x = 0; x < grid_size; ++x) {
-            if (result_grid[y][x] == 2) { // Road pixel
+    for (int y = 0; y < padded_size; ++y) {
+        for (int x = 0; x < padded_size; ++x) {
+            if (padded_grid[y][x] == 2) { // Road pixel
                 road_pixels.push_back({x, y});
             }
         }
     }
     
     if (road_pixels.empty()) {
-        return result_grid; // No roads to branch from
+        return input_grid; // No roads to branch from
     }
     
     // Generate more streets - reduce spacing between street starts
-    int streets_per_road = std::max(1, static_cast<int>(road_pixels.size() / (num_streets * 2))); // Changed from *5 to *2
+    int denom = std::max(1, num_streets * 2);
+    int streets_per_road = std::max(1, static_cast<int>(road_pixels.size() / denom)); // Changed from *5 to *2
     int streets_generated = 0;
     
-    for (size_t i = 0; i < road_pixels.size() && streets_generated < num_streets; i += streets_per_road) {
+    for (size_t i = 0; i < road_pixels.size() && streets_generated < (size_t)std::max(0, num_streets); i += streets_per_road) {
         int grid_x = road_pixels[i].first;
         int grid_y = road_pixels[i].second;
         
         // Convert grid coordinates to world coordinates
-        double start_x = wx + (grid_x * size) / (double)grid_size;
-        double start_y = wy + (grid_y * size) / (double)grid_size;
+        double start_x = wx + (double)grid_x;
+        double start_y = wy + (double)grid_y;
         
         // Estimate road direction by checking neighboring road pixels
         float road_direction = 0.0f;
@@ -280,8 +343,8 @@ std::vector<std::vector<int>> generate_streets_grid(const std::vector<std::vecto
                 if (dx == 0 && dy == 0) continue;
                 int nx = grid_x + dx;
                 int ny = grid_y + dy;
-                if (nx >= 0 && nx < grid_size && ny >= 0 && ny < grid_size) {
-                    if (result_grid[ny][nx] == 2) { // Another road pixel
+                if (nx >= 0 && nx < padded_size && ny >= 0 && ny < padded_size) {
+                    if (padded_grid[ny][nx] == 2) { // Another road pixel
                         road_direction += std::atan2(dy, dx);
                         direction_count++;
                     }
@@ -301,22 +364,29 @@ std::vector<std::vector<int>> generate_streets_grid(const std::vector<std::vecto
         
         // Start street NEXT TO the road pixel, not ON it
         // Move one step in the perpendicular direction from the road
-        double offset_distance = size / (double)grid_size; // One grid cell worth
+        double offset_distance = 1.0; // One grid cell
         double x = start_x + std::cos(street_direction) * offset_distance;
         double y = start_y + std::sin(street_direction) * offset_distance;
         int street_length = worm_length / 3; // Streets are shorter
+
+        const float maxTurn = deg2rad(Config::Street::MAX_TURN_DEG);
+        const float maxTurnPerStep = deg2rad(Config::Street::MAX_TURN_DEG_PER_STEP);
+        float heading = wrap_pi(street_direction);
+        bool inBend = false;
+        float bendTarget = heading;
+        int phaseRemaining = 0;
 
         float smoothRadius = (Config::Street::THICKNESS_MIN + Config::Street::THICKNESS_MAX) * 0.5f;
         
         for (int j = 0; j < street_length; ++j) {
             // Convert world coordinates to grid coordinates
-            int street_grid_x = static_cast<int>((x - wx) * grid_size / size);
-            int street_grid_y = static_cast<int>((y - wy) * grid_size / size);
+            int street_grid_x = static_cast<int>(std::floor(x - (double)wx));
+            int street_grid_y = static_cast<int>(std::floor(y - (double)wy));
             
             // Check bounds and avoid roads
-            if (street_grid_x >= 0 && street_grid_x < grid_size && 
-                street_grid_y >= 0 && street_grid_y < grid_size) {
-                if (result_grid[street_grid_y][street_grid_x] == 2) {
+            if (street_grid_x >= 0 && street_grid_x < padded_size && 
+                street_grid_y >= 0 && street_grid_y < padded_size) {
+                if (padded_grid[street_grid_y][street_grid_x] == 2) {
                     break; // Stop if we hit a road
                 }
 
@@ -328,23 +398,59 @@ std::vector<std::vector<int>> generate_streets_grid(const std::vector<std::vecto
                 float targetRadius = lerp(Config::Street::THICKNESS_MIN, Config::Street::THICKNESS_MAX, t);
                 smoothRadius = lerp(smoothRadius, targetRadius, Config::Street::THICKNESS_SMOOTH_ALPHA);
 
-                paint_disc_if(result_grid, street_grid_x, street_grid_y, smoothRadius, 3, 0);
+                paint_disc_if(padded_grid, street_grid_x, street_grid_y, smoothRadius, 3, 0);
             } else {
                 break; // Out of bounds
             }
-            
-            // Add slight noise to direction for more organic streets
-            float noise_influence = 0.3f;
-            float perlin_val = perlin.GetValue(x * perlin_scale * 2, y * perlin_scale * 2, 0.0f) * noise_influence;
-            float angle = street_direction + perlin_val;
-            
-            // Move to next position
-            x += std::cos(angle) * step_size;
-            y += std::sin(angle) * step_size;
+
+            if (phaseRemaining <= 0) {
+                int64_t xi = (int64_t)std::floor(x);
+                int64_t yi = (int64_t)std::floor(y);
+                int64_t salt = (int64_t)seed + (int64_t)i + (int64_t)j + (inBend ? 5300 : 7300);
+
+                if (inBend) {
+                    inBend = false;
+                    phaseRemaining = pick_steps_range(Config::Street::STRAIGHT_MIN_STEPS,
+                                                     Config::Street::STRAIGHT_MAX_STEPS,
+                                                     xi, yi, salt);
+                } else {
+                    inBend = true;
+                    phaseRemaining = pick_steps_range(Config::Street::BEND_MIN_STEPS,
+                                                     Config::Street::BEND_MAX_STEPS,
+                                                     xi, yi, salt);
+
+                    float rawDesired = quantized_angle((float)x, (float)y, perlin_scale * 2.0f, grid_angles, noise_strength, perlin);
+                    float d = angle_diff(rawDesired, heading);
+                    if (d > maxTurn) d = maxTurn;
+                    else if (d < -maxTurn) d = -maxTurn;
+
+                    if (std::abs(d) < deg2rad(2.0f)) {
+                        double s = deterministic_unit(xi, yi, salt + 123);
+                        float forced = std::min(maxTurn, deg2rad(20.0f));
+                        d = (s < 0.5) ? -forced : forced;
+                    }
+
+                    bendTarget = wrap_pi(heading + d);
+                }
+            }
+
+            if (inBend) {
+                heading = rotate_towards(heading, bendTarget, maxTurnPerStep);
+            }
+            x += std::cos(heading) * step_size;
+            y += std::sin(heading) * step_size;
+            phaseRemaining--;
         }
         
         streets_generated++;
     }
-    
+
+    // Crop padded result back to chunk grid.
+    std::vector<std::vector<int>> result_grid = input_grid;
+    for (int z = 0; z < chunk_size; ++z) {
+        for (int x = 0; x < chunk_size; ++x) {
+            result_grid[z][x] = padded_grid[z + padding][x + padding];
+        }
+    }
     return result_grid;
 }

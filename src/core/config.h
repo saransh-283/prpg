@@ -50,8 +50,26 @@ namespace Highway {
     constexpr int WORM_LENGTH = 1000;        // Number of segments in each highway polyline
     constexpr float STEP_SIZE = 1.0f;        // Distance between highway polyline points (world units)
     constexpr float PERLIN_SCALE = 0.01f;    // Scale factor for direction noise (lower = straighter highways)
-    constexpr int GRID_ANGLES = 4;           // Number of quantized angles (4 = 90° increments, 8 = 45°, etc.)
+    constexpr int GRID_ANGLES = 36;          // Number of quantized angles (36 = 10° increments)
     constexpr float NOISE_STRENGTH = 1.0f;   // Amplitude of directional noise (higher = more variation)
+
+    // Curvature constraints
+    // - Max turn: limits sharp corners.
+    // - Min steps between turns: enforces long straight/bendy runs.
+    // - Max turn per step: makes bends gradual (radians/step derived from degrees).
+    constexpr float MAX_TURN_DEG = 20.0f;     // Highways: restrict turns to <= 20°
+    constexpr int MIN_STEPS_BETWEEN_TURNS = 30; // (legacy) prefer STRAIGHT_*/BEND_* below
+    constexpr float MAX_TURN_DEG_PER_STEP = 0.75f; // Highways: highest gradual bending
+
+    // Global highway seeding (for seamless long highways across chunks)
+    constexpr int GLOBAL_CELL_SPACING = 64;     // Larger spacing => fewer global highway seeds
+    constexpr float GLOBAL_SEED_PROB = 0.006f;  // Probability per global cell to start a highway
+
+    // Balance straight parts vs bend parts (in steps)
+    constexpr int STRAIGHT_MIN_STEPS = 80;
+    constexpr int STRAIGHT_MAX_STEPS = 140;
+    constexpr int BEND_MIN_STEPS = 20;
+    constexpr int BEND_MAX_STEPS = 40;
     constexpr int PADDING = 8;               // Extra padding around chunk for seamless generation
     constexpr int SEED = 42;                 // Base seed for highway generation RNG
 
@@ -72,12 +90,23 @@ namespace Highway {
 // Road Generation Parameters
 // ============================================================================
 namespace Road {
-    constexpr int NUM_ROADS = 50;           // Number of roads to generate per chunk
+    constexpr int NUM_ROADS = 20;           // Number of roads to generate per chunk
     constexpr int WORM_LENGTH = 800;         // Number of segments in each road polyline
     constexpr float STEP_SIZE = 1.0f;        // Distance between road polyline points (world units)
     constexpr float PERLIN_SCALE = 0.01f;    // Scale factor for direction noise
-    constexpr int GRID_ANGLES = 4;           // Number of quantized angles
-    constexpr float NOISE_STRENGTH = 1.0f;   // Amplitude of directional noise
+    constexpr int GRID_ANGLES = 18;          // Number of quantized angles (18 = 20° increments)
+    constexpr float NOISE_STRENGTH = 10.0f;   // Amplitude of directional noise
+
+    // Curvature constraints
+    constexpr float MAX_TURN_DEG = 40.0f;     // Roads: restrict turns to <= 40°
+    constexpr int MIN_STEPS_BETWEEN_TURNS = 15; // (legacy) prefer STRAIGHT_*/BEND_* below
+    constexpr float MAX_TURN_DEG_PER_STEP = 2.25f; // Roads: medium gradual bending
+
+    // Balance straight parts vs bend parts (in steps)
+    constexpr int STRAIGHT_MIN_STEPS = 35;
+    constexpr int STRAIGHT_MAX_STEPS = 70;
+    constexpr int BEND_MIN_STEPS = 15;
+    constexpr int BEND_MAX_STEPS = 30;
     constexpr int PADDING = 8;               // Extra padding around chunk
     constexpr int SEED = 42;                 // Base seed for road generation RNG
     constexpr int SEARCH_RADIUS_CHUNKS = 1;  // Chunks to search when finding nearest road
@@ -103,8 +132,19 @@ namespace Street {
     constexpr int WORM_LENGTH = 400;         // Number of segments in each street polyline
     constexpr float STEP_SIZE = 1.0f;        // Distance between street polyline points (world units)
     constexpr float PERLIN_SCALE = 0.01f;    // Scale factor for direction noise
-    constexpr int GRID_ANGLES = 4;           // Number of quantized angles
+    constexpr int GRID_ANGLES = 12;          // Number of quantized angles (12 = 30° increments)
     constexpr float NOISE_STRENGTH = 1.0f;   // Amplitude of directional noise
+
+    // Curvature constraints
+    constexpr float MAX_TURN_DEG = 60.0f;     // Streets: restrict turns to <= 60°
+    constexpr int MIN_STEPS_BETWEEN_TURNS = 6; // (legacy) prefer STRAIGHT_*/BEND_* below
+    constexpr float MAX_TURN_DEG_PER_STEP = 6.0f; // Streets: lowest gradual bending (most agile)
+
+    // Balance straight parts vs bend parts (in steps)
+    constexpr int STRAIGHT_MIN_STEPS = 6;
+    constexpr int STRAIGHT_MAX_STEPS = 18;
+    constexpr int BEND_MIN_STEPS = 10;
+    constexpr int BEND_MAX_STEPS = 22;
     constexpr int PADDING = 8;               // Extra padding around chunk
     constexpr int SEED = 42;                 // Base seed for street generation RNG
     constexpr float ROAD_SEARCH_RADIUS = 4.0f; // Max distance to search for parent roads (world units)
@@ -125,7 +165,7 @@ namespace Street {
 // Building Generation Parameters
 // ============================================================================
 namespace Building {
-    constexpr float DENSITY = 10.0f;         // Building density multiplier (higher = more buildings)
+    constexpr float DENSITY = 20.0f;         // Building density multiplier (higher = more buildings)
     constexpr int SEED = 42;                 // Base seed for building generation RNG
     constexpr int PADDING = 8;               // Extra padding around chunk
     

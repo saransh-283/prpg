@@ -5,8 +5,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include "core/config.h"
-#include "core/resources.h"
+#include <core/config.h>
+#include <core/resources.h>
 #include <objects/text/text_renderer.h>
 #include <ui/loading/loading.h>
 #include <objects/models/3d/cube/mesh.h>
