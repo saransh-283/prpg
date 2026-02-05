@@ -53,6 +53,11 @@ bool GenerateRoadsForChunk(int cx, int cz);
 // Generate streets mesh for a single chunk (assumes roads/highways are already generated). Returns true on success.
 void GenerateStreetsForChunk(int cx, int cz);
 
+// Ensure building data/meshes exist for a single chunk. Returns true on success.
+// Note: buildings are currently generated as part of the chunk pipeline; this wrapper
+// exists so the loader can track buildings as an explicit step.
+bool GenerateBuildingsForChunk(int cx, int cz);
+
 // Determine spawn point near (x,z) by finding nearest road intersection
 // Uses already-generated chunk data. Returns best spawn point or input position if no roads found.
 glm::vec2 DetermineSpawnPoint(float x, float z, int search_radius_chunks = 2);

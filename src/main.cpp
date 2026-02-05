@@ -1,5 +1,6 @@
 #include <iostream>
 #include <string>
+#include <csignal>
 #include <SDL2/SDL.h>
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -28,6 +29,18 @@
 // Deferred renderer and skybox
 #include <rendering/deferred_renderer.h>
 #include <rendering/skybox.h>
+
+namespace {
+volatile std::sig_atomic_t g_terminateRequested = 0;
+
+void HandleTerminateSignal(int) {
+    g_terminateRequested = 1;
+}
+
+bool TerminateRequested() {
+    return g_terminateRequested != 0;
+}
+}
 
 int main(int argc, char *argv[])
 {
@@ -89,6 +102,10 @@ int main(int argc, char *argv[])
     // Enable depth testing for 3D rendering
     glEnable(GL_DEPTH_TEST);
 
+    // Handle Ctrl+C / SIGTERM as a clean exit (best-effort).
+    std::signal(SIGINT, HandleTerminateSignal);
+    std::signal(SIGTERM, HandleTerminateSignal);
+
     // Initialize the project's text overlay system
     InitTextOverlay();
 
@@ -113,6 +130,19 @@ int main(int argc, char *argv[])
     // initial camera/spawn holder used by the spawn determination task
     glm::vec3 initialCameraPos(0.0f, 0.0f, 3.0f);
 
+    // Shader program variables; these can be populated by loading tasks.
+    GLuint program3D = 0;
+    GLuint markerSdfProgram = 0;
+    GLuint terrainShader = 0;
+    GLuint roadsShader = 0;
+    GLuint highwaysShader = 0;
+    GLuint streetsShader = 0;
+    GLuint buildingsShader = 0;
+
+    // NPC system can be initialized during loading once a spawn position is known.
+    NpcSystem npcSystem;
+    bool npcInitialized = false;
+
     for (int dz = -initialViewRadius; dz <= initialViewRadius; ++dz) {
         for (int dx = -initialViewRadius; dx <= initialViewRadius; ++dx) {
             int cx = centerCx + dx;
@@ -131,7 +161,8 @@ int main(int argc, char *argv[])
                     initialCameraPos.x = candidate.x;
                     initialCameraPos.z = candidate.y;
                     initialCameraPos.y = SampleTerrainHeight(candidate.x, candidate.y) + Config::Camera::HEIGHT_OFFSET;
-                    ClearLoadingTasks();
+                    // Skip the remaining chunk-generation tasks only; keep essential tasks (e.g., NPC init).
+                    ClearLoadingTasksWithPrefix("Gen");
                 }
                 return true;
             }, "GenRoads");
@@ -140,6 +171,10 @@ int main(int argc, char *argv[])
                 GenerateStreetsForChunk(cx, cz);
                 return true;
             }, "GenStreets");
+
+            // buildings generation is part of the chunk pipeline, but keep it as a
+            // distinct task so the loader displays explicit buildings progress.
+            AddLoadingTask([cx, cz](){ return GenerateBuildingsForChunk(cx, cz); }, "GenBuildings");
         }
     }
 
@@ -153,42 +188,41 @@ int main(int argc, char *argv[])
         initialCameraPos.y = SampleTerrainHeight(spawn.x, spawn.y) + Config::Camera::HEIGHT_OFFSET;
         return true;
     }, "DetermineSpawn");
+
+    // Initialize NPCs once we have a deterministic spawn position.
     AddLoadingTask([&](){
-        // Load simple 3D shader from files
-        GLuint program3D_local = 0;
-        bool ok = LoadShaderProgram(Resources::Shaders::Simple3D::VERTEX, Resources::Shaders::Simple3D::FRAGMENT, program3D_local);
-        // store program id in a global-like place by setting program3D via pointer in outer scope
-        // We'll keep program3D variable and set after tasks finish; for now return ok.
-        return ok;
-    }, "LoadShaders");
+        npcInitialized = npcSystem.Initialize(initialCameraPos);
+        return npcInitialized;
+    }, "InitNPCs");
+
+    AddLoadingTask([&](){
+        return LoadShaderProgram(Resources::Shaders::Simple3D::VERTEX, Resources::Shaders::Simple3D::FRAGMENT, program3D);
+    }, "LoadSimple3DShader");
 
     // Load terrain shader
     AddLoadingTask([&](){
-        GLuint terrainShader_local = 0;
-        bool ok = LoadShaderProgram(Resources::Shaders::Terrain::VERTEX, Resources::Shaders::Terrain::FRAGMENT, terrainShader_local);
-        return ok;
+        return LoadShaderProgram(Resources::Shaders::Terrain::VERTEX, Resources::Shaders::Terrain::FRAGMENT, terrainShader);
     }, "LoadTerrainShader");
 
     // Load roads shader
     AddLoadingTask([&](){
-        GLuint roadsShader_local = 0;
-        bool ok = LoadShaderProgram(Resources::Shaders::Roads::VERTEX, Resources::Shaders::Roads::FRAGMENT, roadsShader_local);
-        return ok;
+        return LoadShaderProgram(Resources::Shaders::Roads::VERTEX, Resources::Shaders::Roads::FRAGMENT, roadsShader);
     }, "LoadRoadsShader");
 
     // Load highways shader
     AddLoadingTask([&](){
-        GLuint highwaysShader_local = 0;
-        bool ok = LoadShaderProgram(Resources::Shaders::Highways::VERTEX, Resources::Shaders::Highways::FRAGMENT, highwaysShader_local);
-        return ok;
+        return LoadShaderProgram(Resources::Shaders::Highways::VERTEX, Resources::Shaders::Highways::FRAGMENT, highwaysShader);
     }, "LoadHighwaysShader");
 
     // Load streets shader
     AddLoadingTask([&](){
-        GLuint streetsShader_local = 0;
-        bool ok = LoadShaderProgram(Resources::Shaders::Streets::VERTEX, Resources::Shaders::Streets::FRAGMENT, streetsShader_local);
-        return ok;
+        return LoadShaderProgram(Resources::Shaders::Streets::VERTEX, Resources::Shaders::Streets::FRAGMENT, streetsShader);
     }, "LoadStreetsShader");
+
+    // Buildings: compile shader during loading so map rendering has it ready.
+    AddLoadingTask([&](){
+        return LoadShaderProgram(Resources::Shaders::Buildings::VERTEX, Resources::Shaders::Buildings::FRAGMENT, buildingsShader);
+    }, "LoadBuildingsShader");
 
     // Initialize map synchronously so its resources are available even if
     // the loader early-exits after finding a spawn from generated roads.
@@ -199,15 +233,6 @@ int main(int argc, char *argv[])
 
     // A finalization task that does lightweight setup if needed
     AddLoadingTask([](){ return true; }, "FinalizeLoading");
-
-    // We'll hold the shader program variables and attempt to load them again after loading
-    GLuint program3D = 0;
-    GLuint markerSdfProgram = 0;
-    GLuint terrainShader = 0;
-    GLuint roadsShader = 0;
-    GLuint highwaysShader = 0;
-    GLuint streetsShader = 0;
-    GLuint buildingsShader = 0;
 
     // Run a small loading loop until tasks complete. This keeps the window
     // responsive and draws the loading overlay using the same GL context.
@@ -228,6 +253,20 @@ int main(int argc, char *argv[])
                 SDL_Quit();
                 return 0;
             }
+
+            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) {
+                SDL_GL_DeleteContext(glContext);
+                SDL_DestroyWindow(window);
+                SDL_Quit();
+                return 0;
+            }
+        }
+
+        if (TerminateRequested()) {
+            SDL_GL_DeleteContext(glContext);
+            SDL_DestroyWindow(window);
+            SDL_Quit();
+            return 0;
         }
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -245,43 +284,43 @@ int main(int argc, char *argv[])
     }
 
     // Try loading shader programs
-    if (!LoadShaderProgram(Resources::Shaders::Simple3D::VERTEX, Resources::Shaders::Simple3D::FRAGMENT, program3D))
+    if (!program3D && !LoadShaderProgram(Resources::Shaders::Simple3D::VERTEX, Resources::Shaders::Simple3D::FRAGMENT, program3D))
     {
         std::cerr << "Failed to load 3D shader program" << std::endl;
         program3D = 0;
     }
 
-    if (!LoadShaderProgram(Resources::Shaders::UI::MarkerSDF::VERTEX, Resources::Shaders::UI::MarkerSDF::FRAGMENT, markerSdfProgram))
+    if (!markerSdfProgram && !LoadShaderProgram(Resources::Shaders::UI::MarkerSDF::VERTEX, Resources::Shaders::UI::MarkerSDF::FRAGMENT, markerSdfProgram))
     {
         std::cerr << "Failed to load marker SDF shader program" << std::endl;
         markerSdfProgram = 0;
     }
 
-    if (!LoadShaderProgram(Resources::Shaders::Terrain::VERTEX, Resources::Shaders::Terrain::FRAGMENT, terrainShader))
+    if (!terrainShader && !LoadShaderProgram(Resources::Shaders::Terrain::VERTEX, Resources::Shaders::Terrain::FRAGMENT, terrainShader))
     {
         std::cerr << "Failed to load terrain shader program" << std::endl;
         terrainShader = 0;
     }
 
-    if (!LoadShaderProgram(Resources::Shaders::Roads::VERTEX, Resources::Shaders::Roads::FRAGMENT, roadsShader))
+    if (!roadsShader && !LoadShaderProgram(Resources::Shaders::Roads::VERTEX, Resources::Shaders::Roads::FRAGMENT, roadsShader))
     {
         std::cerr << "Failed to load roads shader program" << std::endl;
         roadsShader = 0;
     }
 
-    if (!LoadShaderProgram(Resources::Shaders::Highways::VERTEX, Resources::Shaders::Highways::FRAGMENT, highwaysShader))
+    if (!highwaysShader && !LoadShaderProgram(Resources::Shaders::Highways::VERTEX, Resources::Shaders::Highways::FRAGMENT, highwaysShader))
     {
         std::cerr << "Failed to load highways shader program" << std::endl;
         highwaysShader = 0;
     }
 
-    if (!LoadShaderProgram(Resources::Shaders::Streets::VERTEX, Resources::Shaders::Streets::FRAGMENT, streetsShader))
+    if (!streetsShader && !LoadShaderProgram(Resources::Shaders::Streets::VERTEX, Resources::Shaders::Streets::FRAGMENT, streetsShader))
     {
         std::cerr << "Failed to load streets shader program" << std::endl;
         streetsShader = 0;
     }
 
-    if (!LoadShaderProgram(Resources::Shaders::Buildings::VERTEX, Resources::Shaders::Buildings::FRAGMENT, buildingsShader))
+    if (!buildingsShader && !LoadShaderProgram(Resources::Shaders::Buildings::VERTEX, Resources::Shaders::Buildings::FRAGMENT, buildingsShader))
     {
         std::cerr << "Failed to load buildings shader program" << std::endl;
         buildingsShader = 0;
@@ -300,9 +339,10 @@ int main(int argc, char *argv[])
     Player player;
     player.Initialize(initialCameraPos);
 
-    // Initialize NPCs (deterministic spawn near player start)
-    NpcSystem npcSystem;
-    npcSystem.Initialize(initialCameraPos);
+    // NPCs should already have been initialized during loading; fallback if not.
+    if (!npcInitialized) {
+        npcSystem.Initialize(initialCameraPos);
+    }
 
     float angle = 0.0f;
 
@@ -341,6 +381,10 @@ int main(int argc, char *argv[])
 
     while (running)
     {
+        if (TerminateRequested()) {
+            running = false;
+        }
+
         Uint32 now = SDL_GetTicks();
         float delta = (now - lastTicks) / 1000.0f;
         lastTicks = now;

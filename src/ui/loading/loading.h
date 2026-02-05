@@ -25,3 +25,8 @@ void RenderLoading(int windowW, int windowH);
 
 // Cancel any remaining queued loading tasks (used to early-exit loader)
 void ClearLoadingTasks();
+
+// Remove queued loading tasks whose description begins with the given prefix.
+// Useful for skipping the remaining terrain chunk generation tasks once a good
+// spawn has been found, while still allowing essential follow-up tasks to run.
+void ClearLoadingTasksWithPrefix(const std::string& prefix);

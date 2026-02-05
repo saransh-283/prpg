@@ -1,6 +1,6 @@
 #include "loading.h"
 #include <vector>
-#include <queue>
+#include <deque>
 #include <functional>
 #include <string>
 #include <mutex>
@@ -10,7 +10,7 @@
 #include <glm/glm.hpp>
 #include <iostream>
 
-static std::queue<std::pair<std::function<bool()>, std::string>> g_tasks;
+static std::deque<std::pair<std::function<bool()>, std::string>> g_tasks;
 static int g_totalTasks = 0;
 static int g_doneTasks = 0;
 static bool g_inited = false;
@@ -19,7 +19,7 @@ static float g_spinnerAngle = 0.0f;
 void InitLoading() {
     g_totalTasks = 0;
     g_doneTasks = 0;
-    while (!g_tasks.empty()) g_tasks.pop();
+    while (!g_tasks.empty()) g_tasks.pop_front();
     g_inited = true;
     g_spinnerAngle = 0.0f;
 }
@@ -29,16 +29,40 @@ void CleanupLoading() {
 }
 
 void AddLoadingTask(const std::function<bool()>& task, const std::string& description) {
-    g_tasks.push({task, description});
+    g_tasks.push_back({task, description});
     ++g_totalTasks;
 }
 
 void ClearLoadingTasks() {
-    while (!g_tasks.empty()) g_tasks.pop();
+    while (!g_tasks.empty()) g_tasks.pop_front();
     // Account for the currently running task: set total to done+1 so progress
     // doesn't exceed 100% when a task calls ClearLoadingTasks() while still
     // executing (we increment g_doneTasks after task returns).
     g_totalTasks = g_doneTasks + 1;
+}
+
+void ClearLoadingTasksWithPrefix(const std::string& prefix) {
+    if (!g_inited) return;
+    if (g_tasks.empty()) return;
+
+    std::deque<std::pair<std::function<bool()>, std::string>> kept;
+    int removed = 0;
+    for (auto& t : g_tasks) {
+        const std::string& desc = t.second;
+        const bool matches = (!prefix.empty() && desc.rfind(prefix, 0) == 0);
+        if (matches) {
+            ++removed;
+        } else {
+            kept.push_back(std::move(t));
+        }
+    }
+
+    g_tasks = std::move(kept);
+
+    // Recompute total so progress doesn't exceed 100% even if called mid-task.
+    // +1 accounts for the currently executing task (already popped).
+    g_totalTasks = g_doneTasks + static_cast<int>(g_tasks.size()) + 1;
+    (void)removed;
 }
 
 void UpdateLoading() {
@@ -47,7 +71,7 @@ void UpdateLoading() {
         auto taskPair = g_tasks.front();
         std::string desc = taskPair.second;
         // pop before execution to avoid assertion if the task clears the queue
-        g_tasks.pop();
+        g_tasks.pop_front();
         // execute one task per frame to keep UI responsive and valid GL context
         bool ok = taskPair.first();
         (void)ok; // we don't abort on failure for now
@@ -55,9 +79,9 @@ void UpdateLoading() {
 
         // Log completion of this task with progress
         float prog = GetLoadingProgress();
-    int percent = (int)(prog * 100.0f);
-    if (percent > 100) percent = 100;
-    std::cout << "[Loader] Completed: " << desc << " (" << percent << "% )" << std::endl;
+        int percent = (int)(prog * 100.0f);
+        if (percent > 100) percent = 100;
+        std::cout << "[Loader] Completed: " << desc << " (" << percent << "% )" << std::endl;
     }
     // advance spinner
     g_spinnerAngle += 0.12f;

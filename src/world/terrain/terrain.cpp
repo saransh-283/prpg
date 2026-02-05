@@ -15,6 +15,45 @@
 #include <algorithm>
 #include <iostream>
 
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <unordered_set>
+#include <atomic>
+
+struct ChunkBlueprintInput {
+    std::vector<float> polygonPoints; // [x0,z0,x1,z1,...] relative to center, world-space units
+    size_t vertexCount = 0;           // number of 2D vertices (pairs)
+    float centerX = 0.0f;
+    float centerY = 0.0f;
+    float centerZ = 0.0f;
+};
+
+struct ChunkCpuData {
+    int cx = 0;
+    int cz = 0;
+
+    std::vector<std::vector<int>> roadGrid;
+    std::vector<BuildingShape> buildings;
+
+    std::vector<float> terrainVertices;
+    std::vector<unsigned int> terrainIndices;
+
+    std::vector<float> terrainMeshVertices;
+    std::vector<unsigned int> terrainMeshIndices;
+    std::vector<float> highwayMeshVertices;
+    std::vector<unsigned int> highwayMeshIndices;
+    std::vector<float> roadMeshVertices;
+    std::vector<unsigned int> roadMeshIndices;
+    std::vector<float> streetMeshVertices;
+    std::vector<unsigned int> streetMeshIndices;
+    std::vector<float> buildingMeshVertices;
+    std::vector<unsigned int> buildingMeshIndices;
+
+    std::vector<ChunkBlueprintInput> blueprints;
+};
+
 struct Chunk {
     int cx, cz; // chunk coordinates
     GLuint VAO = 0;
@@ -61,6 +100,49 @@ static int g_viewRadius = Config::World::VIEW_RADIUS; // generate chunks within 
 static float g_heightAmplitude = Config::Terrain::HEIGHT_AMPLITUDE; // lower amplitude
 static float g_heightFrequency = Config::Terrain::HEIGHT_FREQUENCY; // lower frequency for gentler slopes
 
+// Async generation state (CPU work off-thread; GPU upload on main thread)
+static std::thread g_chunkWorker;
+static std::mutex g_chunkWorkerMutex;
+static std::condition_variable g_chunkWorkerCv;
+static std::queue<std::pair<int, int>> g_chunkRequests;
+static std::queue<ChunkCpuData> g_chunkReady;
+static std::unordered_set<long long> g_chunkRequestedKeys;
+static std::atomic<bool> g_chunkWorkerStop{false};
+static std::atomic<bool> g_chunkWorkerRunning{false};
+
+static void UploadMeshToGpu(const std::vector<float>& vertices,
+                            const std::vector<unsigned int>& indices,
+                            GLuint& VAO,
+                            GLuint& VBO,
+                            GLuint& EBO,
+                            int& indexCount) {
+    if (VAO) glDeleteVertexArrays(1, &VAO);
+    if (VBO) glDeleteBuffers(1, &VBO);
+    if (EBO) glDeleteBuffers(1, &EBO);
+    VAO = VBO = EBO = 0;
+    indexCount = 0;
+
+    if (vertices.empty() || indices.empty()) return;
+
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+    glGenBuffers(1, &EBO);
+    glBindVertexArray(VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glBindVertexArray(0);
+    indexCount = static_cast<int>(indices.size());
+}
+
+static void StartChunkWorker();
+static void StopChunkWorker();
+static void RequestChunkAsync(int cx, int cz);
+static void ProcessReadyChunks(int currentCx, int currentCz);
+
 long long keyFor(int cx, int cz) {
     return (static_cast<long long>(cx) << 32) ^ static_cast<unsigned int>(cz);
 }
@@ -68,6 +150,7 @@ long long keyFor(int cx, int cz) {
 bool InitTerrain() {
     g_perlin.SetSeed(Config::World::PERLIN_SEED);
     g_perlin.SetFrequency(g_heightFrequency);
+    StartChunkWorker();
     return true;
 }
 
@@ -470,6 +553,11 @@ void GenerateStreetsForChunk(int cx, int cz) {
     // Streets are now generated as part of the main terrain generation pipeline
     GenerateTerrainChunk(cx, cz);
 }
+
+bool GenerateBuildingsForChunk(int cx, int cz) {
+    // Buildings are generated as part of the main terrain generation pipeline.
+    return GenerateTerrainChunk(cx, cz);
+}
 // Determine spawn point using already-generated chunk data (avoid regenerating roads)
 // Returns the best spawn point found, or the input position if no roads exist
 glm::vec2 DetermineSpawnPoint(float x, float z, int search_radius_chunks) {
@@ -569,9 +657,390 @@ static void destroyChunk(Chunk& c) {
     c.buildingPolygonMeshes.clear();
 }
 
+static float sampleHeightWithPerlin(noise::module::Perlin& perlin, float x, float z) {
+    double v = perlin.GetValue(x * g_heightFrequency, z * g_heightFrequency, 0.0);
+    return static_cast<float>(v * g_heightAmplitude);
+}
+
+static void GenerateHeightmapAndInitGridCpu(ChunkCpuData& out, noise::module::Perlin& perlin) {
+    out.terrainVertices.clear();
+    out.terrainIndices.clear();
+    out.terrainVertices.reserve(g_chunkSize * g_chunkSize * 3);
+    out.terrainIndices.reserve((g_chunkSize - 1) * (g_chunkSize - 1) * 6);
+
+    for (int z = 0; z < g_chunkSize; ++z) {
+        for (int x = 0; x < g_chunkSize; ++x) {
+            float wx = (out.cx * (g_chunkSize - 1) + x) * g_scale;
+            float wz = (out.cz * (g_chunkSize - 1) + z) * g_scale;
+            float h = sampleHeightWithPerlin(perlin, wx, wz);
+            out.terrainVertices.push_back(wx);
+            out.terrainVertices.push_back(h);
+            out.terrainVertices.push_back(wz);
+        }
+    }
+
+    for (int z = 0; z < g_chunkSize - 1; ++z) {
+        for (int x = 0; x < g_chunkSize - 1; ++x) {
+            int i0 = z * g_chunkSize + x;
+            int i1 = i0 + 1;
+            int i2 = i0 + g_chunkSize;
+            int i3 = i2 + 1;
+            out.terrainIndices.push_back(i0);
+            out.terrainIndices.push_back(i2);
+            out.terrainIndices.push_back(i1);
+            out.terrainIndices.push_back(i1);
+            out.terrainIndices.push_back(i2);
+            out.terrainIndices.push_back(i3);
+        }
+    }
+
+    int grid_size = g_chunkSize;
+    out.roadGrid.assign(grid_size, std::vector<int>(grid_size, 0));
+}
+
+static void GenerateGridBasedRoadsCpu(ChunkCpuData& out) {
+    int chunk_size = g_chunkSize;
+    int padding = Config::Highway::PADDING;
+    int seed = Config::Highway::SEED;
+
+    out.roadGrid = generate_highways_grid(out.roadGrid, out.cx, out.cz, chunk_size, padding,
+        Config::Highway::NUM_HIGHWAYS, Config::Highway::WORM_LENGTH, Config::Highway::STEP_SIZE,
+        Config::Highway::PERLIN_SCALE, seed, Config::Highway::GRID_ANGLES, Config::Highway::NOISE_STRENGTH);
+
+    out.roadGrid = generate_roads_grid(out.roadGrid, out.cx, out.cz, chunk_size, padding,
+        Config::Road::NUM_ROADS, Config::Road::WORM_LENGTH, Config::Road::STEP_SIZE,
+        Config::Road::PERLIN_SCALE, seed, Config::Road::GRID_ANGLES, Config::Road::NOISE_STRENGTH);
+
+    out.roadGrid = generate_streets_grid(out.roadGrid, out.cx, out.cz, chunk_size, padding,
+        Config::Street::NUM_STREETS, Config::Street::WORM_LENGTH, Config::Street::STEP_SIZE,
+        Config::Street::PERLIN_SCALE, seed, Config::Street::GRID_ANGLES, Config::Street::NOISE_STRENGTH);
+
+    out.buildings = generate_buildings_grid(out.roadGrid, out.cx, out.cz, chunk_size, padding,
+        Config::Building::DENSITY, Config::Building::SEED);
+}
+
+static void BuildMeshFromGridCpu(const ChunkCpuData& src, int roadType, std::vector<float>& vertices, std::vector<unsigned int>& indices) {
+    vertices.clear();
+    indices.clear();
+
+    for (int z = 0; z < g_chunkSize - 1; ++z) {
+        for (int x = 0; x < g_chunkSize - 1; ++x) {
+            if (src.roadGrid[z][x] != roadType) continue;
+
+            unsigned int baseIdx = static_cast<unsigned int>(vertices.size() / 3);
+            for (int dz = 0; dz <= 1; ++dz) {
+                for (int dx = 0; dx <= 1; ++dx) {
+                    int vertIdx = (z + dz) * g_chunkSize + (x + dx);
+                    vertices.push_back(src.terrainVertices[vertIdx * 3]);
+                    vertices.push_back(src.terrainVertices[vertIdx * 3 + 1]);
+                    vertices.push_back(src.terrainVertices[vertIdx * 3 + 2]);
+                }
+            }
+
+            indices.push_back(baseIdx + 0);
+            indices.push_back(baseIdx + 2);
+            indices.push_back(baseIdx + 1);
+            indices.push_back(baseIdx + 1);
+            indices.push_back(baseIdx + 2);
+            indices.push_back(baseIdx + 3);
+        }
+    }
+}
+
+static void BuildBuildingMeshFromGridCpu(const ChunkCpuData& src, std::vector<float>& vertices, std::vector<unsigned int>& indices) {
+    vertices.clear();
+    indices.clear();
+
+    std::vector<std::vector<float>> heightGrid(g_chunkSize, std::vector<float>(g_chunkSize, 0.0f));
+    for (const auto& building : src.buildings) {
+        if (building.points.size() < 3) continue;
+
+        float minX = building.points[0].x;
+        float maxX = building.points[0].x;
+        float minY = building.points[0].y;
+        float maxY = building.points[0].y;
+        for (const auto& p : building.points) {
+            minX = std::min(minX, p.x);
+            maxX = std::max(maxX, p.x);
+            minY = std::min(minY, p.y);
+            maxY = std::max(maxY, p.y);
+        }
+
+        int x0 = std::max(0, static_cast<int>(std::floor(minX)));
+        int x1 = std::min(g_chunkSize - 1, static_cast<int>(std::ceil(maxX)));
+        int z0 = std::max(0, static_cast<int>(std::floor(minY)));
+        int z1 = std::min(g_chunkSize - 1, static_cast<int>(std::ceil(maxY)));
+
+        for (int z = z0; z <= z1; ++z) {
+            for (int x = x0; x <= x1; ++x) {
+                if (src.roadGrid[z][x] != BUILDING) continue;
+                glm::vec2 p(static_cast<float>(x) + 0.5f, static_cast<float>(z) + 0.5f);
+                if (pointInPolygon2D(p, building.points)) {
+                    heightGrid[z][x] = std::max(heightGrid[z][x], building.height);
+                }
+            }
+        }
+    }
+
+    auto pushVertex = [&](float x, float y, float z) {
+        vertices.push_back(x);
+        vertices.push_back(y);
+        vertices.push_back(z);
+    };
+
+    auto addQuad = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c_, const glm::vec3& d) {
+        unsigned int baseIdx = static_cast<unsigned int>(vertices.size() / 3);
+        pushVertex(a.x, a.y, a.z);
+        pushVertex(b.x, b.y, b.z);
+        pushVertex(c_.x, c_.y, c_.z);
+        pushVertex(d.x, d.y, d.z);
+        indices.push_back(baseIdx + 0);
+        indices.push_back(baseIdx + 2);
+        indices.push_back(baseIdx + 1);
+        indices.push_back(baseIdx + 1);
+        indices.push_back(baseIdx + 2);
+        indices.push_back(baseIdx + 3);
+    };
+
+    auto heightAt = [&](int gx, int gz) -> float {
+        if (gx < 0 || gz < 0 || gx >= g_chunkSize || gz >= g_chunkSize) return 0.0f;
+        if (src.roadGrid[gz][gx] != BUILDING) return 0.0f;
+        float hh = heightGrid[gz][gx];
+        if (hh <= 0.0f) hh = Config::Building::ROAD_MIN_HEIGHT;
+        return hh;
+    };
+
+    for (int z = 0; z < g_chunkSize - 1; ++z) {
+        for (int x = 0; x < g_chunkSize - 1; ++x) {
+            if (src.roadGrid[z][x] != BUILDING) continue;
+
+            float h = heightAt(x, z);
+
+            int i00 = (z + 0) * g_chunkSize + (x + 0);
+            int i10 = (z + 0) * g_chunkSize + (x + 1);
+            int i01 = (z + 1) * g_chunkSize + (x + 0);
+            int i11 = (z + 1) * g_chunkSize + (x + 1);
+
+            glm::vec3 v00(src.terrainVertices[i00 * 3], src.terrainVertices[i00 * 3 + 1], src.terrainVertices[i00 * 3 + 2]);
+            glm::vec3 v10(src.terrainVertices[i10 * 3], src.terrainVertices[i10 * 3 + 1], src.terrainVertices[i10 * 3 + 2]);
+            glm::vec3 v01(src.terrainVertices[i01 * 3], src.terrainVertices[i01 * 3 + 1], src.terrainVertices[i01 * 3 + 2]);
+            glm::vec3 v11(src.terrainVertices[i11 * 3], src.terrainVertices[i11 * 3 + 1], src.terrainVertices[i11 * 3 + 2]);
+
+            addQuad(v00, v10, v01, v11);
+
+            glm::vec3 t00(v00.x, v00.y + h, v00.z);
+            glm::vec3 t10(v10.x, v10.y + h, v10.z);
+            glm::vec3 t01(v01.x, v01.y + h, v01.z);
+            glm::vec3 t11(v11.x, v11.y + h, v11.z);
+            addQuad(t00, t10, t01, t11);
+
+            const float eps = 1e-4f;
+
+            { // North
+                float hn = heightAt(x, z - 1);
+                if (h > hn + eps) {
+                    glm::vec3 b00(v00.x, v00.y + hn, v00.z);
+                    glm::vec3 b10(v10.x, v10.y + hn, v10.z);
+                    addQuad(b00, b10, t00, t10);
+                }
+            }
+            { // South
+                float hs = heightAt(x, z + 1);
+                if (h > hs + eps) {
+                    glm::vec3 b01(v01.x, v01.y + hs, v01.z);
+                    glm::vec3 b11(v11.x, v11.y + hs, v11.z);
+                    addQuad(b01, b11, t01, t11);
+                }
+            }
+            { // West
+                float hw = heightAt(x - 1, z);
+                if (h > hw + eps) {
+                    glm::vec3 b00(v00.x, v00.y + hw, v00.z);
+                    glm::vec3 b01(v01.x, v01.y + hw, v01.z);
+                    addQuad(b00, b01, t00, t01);
+                }
+            }
+            { // East
+                float he = heightAt(x + 1, z);
+                if (h > he + eps) {
+                    glm::vec3 b10(v10.x, v10.y + he, v10.z);
+                    glm::vec3 b11(v11.x, v11.y + he, v11.z);
+                    addQuad(b10, b11, t10, t11);
+                }
+            }
+        }
+    }
+}
+
+static void BuildBlueprintInputsCpu(ChunkCpuData& out, noise::module::Perlin& perlin) {
+    out.blueprints.clear();
+    out.blueprints.reserve(out.buildings.size());
+
+    float wx = out.cx * (g_chunkSize - 1) * g_scale;
+    float wz = out.cz * (g_chunkSize - 1) * g_scale;
+
+    for (const auto& building : out.buildings) {
+        if (building.points.size() < 3) continue;
+
+        float gridCenterX = 0.0f, gridCenterZ = 0.0f;
+        for (const auto& pt : building.points) {
+            gridCenterX += pt.x;
+            gridCenterZ += pt.y;
+        }
+        gridCenterX /= building.points.size();
+        gridCenterZ /= building.points.size();
+
+        float worldCenterX = wx + gridCenterX * g_scale;
+        float worldCenterZ = wz + gridCenterZ * g_scale;
+        float centerY = sampleHeightWithPerlin(perlin, worldCenterX, worldCenterZ);
+
+        ChunkBlueprintInput bi;
+        bi.centerX = worldCenterX;
+        bi.centerZ = worldCenterZ;
+        bi.centerY = centerY + 0.02f;
+        bi.vertexCount = building.points.size();
+        bi.polygonPoints.reserve(building.points.size() * 2);
+        for (const auto& pt : building.points) {
+            bi.polygonPoints.push_back((pt.x - gridCenterX) * g_scale);
+            bi.polygonPoints.push_back((pt.y - gridCenterZ) * g_scale);
+        }
+        out.blueprints.push_back(std::move(bi));
+    }
+}
+
+static ChunkCpuData GenerateChunkCpuData(int cx, int cz, noise::module::Perlin& perlin) {
+    ChunkCpuData out;
+    out.cx = cx;
+    out.cz = cz;
+    GenerateHeightmapAndInitGridCpu(out, perlin);
+    GenerateGridBasedRoadsCpu(out);
+
+    BuildMeshFromGridCpu(out, TERRAIN, out.terrainMeshVertices, out.terrainMeshIndices);
+    BuildMeshFromGridCpu(out, HIGHWAY, out.highwayMeshVertices, out.highwayMeshIndices);
+    BuildMeshFromGridCpu(out, ROAD, out.roadMeshVertices, out.roadMeshIndices);
+    BuildMeshFromGridCpu(out, STREET, out.streetMeshVertices, out.streetMeshIndices);
+    BuildBuildingMeshFromGridCpu(out, out.buildingMeshVertices, out.buildingMeshIndices);
+    BuildBlueprintInputsCpu(out, perlin);
+    return out;
+}
+
+static void ChunkWorkerMain() {
+    noise::module::Perlin perlinLocal;
+    perlinLocal.SetSeed(Config::World::PERLIN_SEED);
+    perlinLocal.SetFrequency(g_heightFrequency);
+
+    while (!g_chunkWorkerStop.load()) {
+        std::pair<int, int> req;
+        {
+            std::unique_lock<std::mutex> lock(g_chunkWorkerMutex);
+            g_chunkWorkerCv.wait(lock, [](){
+                return g_chunkWorkerStop.load() || !g_chunkRequests.empty();
+            });
+            if (g_chunkWorkerStop.load()) break;
+            req = g_chunkRequests.front();
+            g_chunkRequests.pop();
+        }
+
+        ChunkCpuData data = GenerateChunkCpuData(req.first, req.second, perlinLocal);
+        {
+            std::lock_guard<std::mutex> lock(g_chunkWorkerMutex);
+            g_chunkReady.push(std::move(data));
+        }
+    }
+}
+
+static void StartChunkWorker() {
+    if (g_chunkWorkerRunning.load()) return;
+    g_chunkWorkerStop = false;
+    g_chunkWorkerRunning = true;
+    g_chunkWorker = std::thread(ChunkWorkerMain);
+}
+
+static void StopChunkWorker() {
+    g_chunkWorkerStop = true;
+    g_chunkWorkerCv.notify_all();
+    if (g_chunkWorkerRunning.exchange(false)) {
+        if (g_chunkWorker.joinable()) g_chunkWorker.join();
+    }
+    std::lock_guard<std::mutex> lock(g_chunkWorkerMutex);
+    while (!g_chunkRequests.empty()) g_chunkRequests.pop();
+    while (!g_chunkReady.empty()) g_chunkReady.pop();
+    g_chunkRequestedKeys.clear();
+}
+
+static void RequestChunkAsync(int cx, int cz) {
+    long long k = keyFor(cx, cz);
+    if (g_chunks.find(k) != g_chunks.end()) return;
+
+    {
+        std::lock_guard<std::mutex> lock(g_chunkWorkerMutex);
+        if (g_chunkRequestedKeys.find(k) != g_chunkRequestedKeys.end()) return;
+        g_chunkRequestedKeys.insert(k);
+        g_chunkRequests.push({cx, cz});
+    }
+    g_chunkWorkerCv.notify_one();
+}
+
+static void ProcessReadyChunks(int currentCx, int currentCz) {
+    const int maxUploadsPerFrame = 1;
+    int uploaded = 0;
+
+    while (uploaded < maxUploadsPerFrame) {
+        ChunkCpuData data;
+        {
+            std::lock_guard<std::mutex> lock(g_chunkWorkerMutex);
+            if (g_chunkReady.empty()) break;
+            data = std::move(g_chunkReady.front());
+            g_chunkReady.pop();
+            g_chunkRequestedKeys.erase(keyFor(data.cx, data.cz));
+        }
+
+        if (std::abs(data.cx - currentCx) > g_viewRadius || std::abs(data.cz - currentCz) > g_viewRadius) {
+            continue;
+        }
+
+        long long k = keyFor(data.cx, data.cz);
+        if (g_chunks.find(k) != g_chunks.end()) continue;
+
+        Chunk c;
+        c.cx = data.cx;
+        c.cz = data.cz;
+        c.roadGrid = std::move(data.roadGrid);
+        c.buildings = std::move(data.buildings);
+        c.terrainVertices = std::move(data.terrainVertices);
+        c.terrainIndices = std::move(data.terrainIndices);
+
+        UploadMeshToGpu(data.terrainMeshVertices, data.terrainMeshIndices, c.VAO, c.VBO, c.EBO, c.indexCount);
+        UploadMeshToGpu(data.highwayMeshVertices, data.highwayMeshIndices, c.highwayVAO, c.highwayVBO, c.highwayEBO, c.highwayIndexCount);
+        UploadMeshToGpu(data.roadMeshVertices, data.roadMeshIndices, c.roadVAO, c.roadVBO, c.roadEBO, c.roadIndexCount);
+        UploadMeshToGpu(data.streetMeshVertices, data.streetMeshIndices, c.streetVAO, c.streetVBO, c.streetEBO, c.streetIndexCount);
+        UploadMeshToGpu(data.buildingMeshVertices, data.buildingMeshIndices, c.buildingVAO, c.buildingVBO, c.buildingEBO, c.buildingIndexCount);
+
+        c.buildingPolygonMeshes.clear();
+        c.buildingPolygonMeshes.reserve(data.blueprints.size());
+        for (const auto& bp : data.blueprints) {
+            if (bp.vertexCount < 3 || bp.polygonPoints.empty()) continue;
+            PolygonMesh blueprintMesh = CreatePolygonMesh(
+                bp.polygonPoints.data(),
+                bp.vertexCount,
+                bp.centerX,
+                bp.centerY,
+                bp.centerZ
+            );
+            c.buildingPolygonMeshes.push_back(blueprintMesh);
+        }
+
+        g_chunks[k] = std::move(c);
+        ++uploaded;
+    }
+}
+
 void UpdateTerrain(const glm::vec3& cameraPos) {
     int cx = static_cast<int>(std::floor(cameraPos.x / ((g_chunkSize - 1) * g_scale)));
     int cz = static_cast<int>(std::floor(cameraPos.z / ((g_chunkSize - 1) * g_scale)));
+
+    // Integrate completed background chunks (GPU upload happens here on main thread)
+    ProcessReadyChunks(cx, cz);
 
     // ensure chunks in view radius exist
     for (int dz = -g_viewRadius; dz <= g_viewRadius; ++dz) {
@@ -580,10 +1049,7 @@ void UpdateTerrain(const glm::vec3& cameraPos) {
             int nz = cz + dz;
             long long k = keyFor(nx, nz);
             if (g_chunks.find(k) == g_chunks.end()) {
-                Chunk c;
-                c.cx = nx; c.cz = nz;
-                createChunkMesh(c);
-                g_chunks[k] = c;
+                RequestChunkAsync(nx, nz);
             }
         }
     }
@@ -593,7 +1059,7 @@ void UpdateTerrain(const glm::vec3& cameraPos) {
     for (auto& kv : g_chunks) {
         int dx = (int)(kv.second.cx - cx);
         int dz = (int)(kv.second.cz - cz);
-        if (std::abs(dx) > g_viewRadius + 1 || std::abs(dz) > g_viewRadius + 1) {
+        if (std::abs(dx) > g_viewRadius || std::abs(dz) > g_viewRadius) {
             toRemove.push_back(kv.first);
         }
     }
@@ -670,6 +1136,7 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
 }
 
 void CleanupTerrain() {
+    StopChunkWorker();
     for (auto& kv : g_chunks) {
         destroyChunk(kv.second);
     }
