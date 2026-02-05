@@ -23,6 +23,8 @@
 #include <ui/debug/debug_overlay.h>
 // Player entity
 #include <entities/player/player.h>
+// NPC entity
+#include <entities/npc/npc.h>
 // Deferred renderer and skybox
 #include <rendering/deferred_renderer.h>
 #include <rendering/skybox.h>
@@ -298,6 +300,10 @@ int main(int argc, char *argv[])
     Player player;
     player.Initialize(initialCameraPos);
 
+    // Initialize NPCs (deterministic spawn near player start)
+    NpcSystem npcSystem;
+    npcSystem.Initialize(initialCameraPos);
+
     float angle = 0.0f;
 
     // Spawn point was computed during loading and cameraPos updated accordingly if available
@@ -400,7 +406,7 @@ int main(int argc, char *argv[])
             UpdateMapOffset(scrollDelta);
         } else {
             // Normal player movement when map is not visible
-            player.HandleKeyboard(kb, delta);
+            player.HandleKeyboard(kb, delta, &npcSystem);
         }
         
         player.Update(delta);
@@ -412,6 +418,7 @@ int main(int argc, char *argv[])
         DeferredRenderer::BeginShadowPass();
         glm::mat4 lightSpaceMatrix = DeferredRenderer::GetLightSpaceMatrix();
         RenderTerrainToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix);
+        npcSystem.RenderToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix);
         DeferredRenderer::EndShadowPass();
 
         // === GEOMETRY PASS (render to G-buffer) ===
@@ -428,6 +435,7 @@ int main(int argc, char *argv[])
 
         // Render world geometry to G-buffer
         RenderTerrainToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view);
+        npcSystem.RenderToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view);
         
         DeferredRenderer::EndGeometryPass();
 
@@ -487,6 +495,8 @@ int main(int argc, char *argv[])
     CleanupDebugOverlay();
 
     CleanupTerrain();
+
+    npcSystem.Cleanup();
 
     // Cleanup map
     CleanupMap();

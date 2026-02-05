@@ -1,6 +1,7 @@
 #include "player.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <world/terrain/terrain.h>
+#include <entities/npc/npc.h>
 #include <iostream>
 
 Player::Player()
@@ -31,7 +32,7 @@ void Player::Update(float deltaTime)
     CheckGroundCollision();
 }
 
-void Player::HandleKeyboard(const Uint8* keyboardState, float deltaTime)
+void Player::HandleKeyboard(const Uint8* keyboardState, float deltaTime, const NpcSystem* npcSystem)
 {
     // Calculate horizontal forward direction (ignore Y component for ground movement)
     glm::vec3 horizontalFront = glm::normalize(glm::vec3(cameraFront.x, 0.0f, cameraFront.z));
@@ -59,14 +60,20 @@ void Player::HandleKeyboard(const Uint8* keyboardState, float deltaTime)
     const float r = Config::Player::COLLISION_RADIUS;
     glm::vec3 newPos = cameraPos;
 
+    auto collides = [&](float x, float z) {
+        if (CollidesWithBuilding(x, z, r)) return true;
+        if (npcSystem && npcSystem->CollidesXZ(x, z, r)) return true;
+        return false;
+    };
+
     // Slide-style resolution: try X then Z.
     glm::vec3 tryX = glm::vec3(cameraPos.x + delta.x, cameraPos.y, cameraPos.z);
-    if (!CollidesWithBuilding(tryX.x, tryX.z, r)) {
+    if (!collides(tryX.x, tryX.z)) {
         newPos.x = tryX.x;
     }
 
     glm::vec3 tryZ = glm::vec3(newPos.x, cameraPos.y, cameraPos.z + delta.z);
-    if (!CollidesWithBuilding(tryZ.x, tryZ.z, r)) {
+    if (!collides(tryZ.x, tryZ.z)) {
         newPos.z = tryZ.z;
     }
 

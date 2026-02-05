@@ -75,6 +75,7 @@ endif()
 file(COPY ${CMAKE_SOURCE_DIR}/src/models DESTINATION ${CMAKE_BINARY_DIR})
 file(COPY ${CMAKE_SOURCE_DIR}/src/assets DESTINATION ${CMAKE_BINARY_DIR})
 file(COPY ${CMAKE_SOURCE_DIR}/src/utils DESTINATION ${CMAKE_BINARY_DIR})
+file(COPY ${CMAKE_SOURCE_DIR}/src/entities/npc DESTINATION ${CMAKE_BINARY_DIR}/src/entities)
 
 # Graphics and utility dependencies used by the procgen main
 find_package(OpenGL REQUIRED)

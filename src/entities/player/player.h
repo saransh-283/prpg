@@ -4,6 +4,8 @@
 #include <glm/glm.hpp>
 #include <SDL2/SDL.h>
 
+class NpcSystem;
+
 class Player {
 public:
     Player();
@@ -16,7 +18,7 @@ public:
     void Update(float deltaTime);
 
     // Handle input events
-    void HandleKeyboard(const Uint8* keyboardState, float deltaTime);
+    void HandleKeyboard(const Uint8* keyboardState, float deltaTime, const NpcSystem* npcSystem = nullptr);
     void HandleMouseMotion(float xrel, float yrel);
     void HandleKeyPress(SDL_Keycode key);
 
