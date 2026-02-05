@@ -10,6 +10,9 @@ CustomMesh CreateCustomMesh(const std::string& modelPath)
     // Copy triangles from GLTF mesh to custom mesh
     mesh.triangles = gltfMesh.triangles;
     mesh.triangleCount = gltfMesh.triangleCount;
+    mesh.hasAabb = gltfMesh.hasAabb;
+    mesh.aabbMin = gltfMesh.aabbMin;
+    mesh.aabbMax = gltfMesh.aabbMax;
 
     std::cout << "Created custom mesh with " << mesh.triangleCount << " triangles from " << modelPath << std::endl;
 

@@ -5,10 +5,15 @@
 #include <utils/triangulate/mesh.h>
 #include <utils/gltf/gltf_loader.h>
 #include <vector>
+#include <glm/glm.hpp>
 
 struct CustomMesh {
     std::vector<TriangulateMesh> triangles;
     unsigned int triangleCount;
+
+    bool hasAabb = false;
+    glm::vec3 aabbMin = glm::vec3(0.0f);
+    glm::vec3 aabbMax = glm::vec3(0.0f);
 };
 
 // Creates a custom mesh using GLTF file at the provided path

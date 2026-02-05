@@ -215,12 +215,15 @@ namespace Player {
     constexpr float MOVE_SPEED = 15.0f;          // Player movement speed in units per second
     constexpr float GRAVITY = -9.81f;           // Gravity acceleration (m/s²)
     constexpr float COLLISION_RADIUS = 0.45f;   // Player horizontal collision radius (world units)
+
+    // Player camera/eye height above the ground when standing.
+    // This is the value used by grounding/collision, not just spawn.
+    constexpr float EYE_HEIGHT = 2.0f;
 }
 
 namespace Camera {
     constexpr float NEAR_PLANE = 0.1f;          // Near clipping plane distance
     constexpr float FAR_PLANE = 1000.0f;        // Far clipping plane distance
-    constexpr float HEIGHT_OFFSET = 5.0f;       // Camera/player height above terrain
     constexpr float FOV = 60.0f;                // Field of view in degrees
 }
 
@@ -231,6 +234,30 @@ namespace Rendering {
     constexpr int SHADOW_MAP_RESOLUTION = 4096; // Shadow map texture resolution (higher = sharper shadows)
     constexpr float SHADOW_DISTANCE = 100.0f;   // Distance from camera to render shadows
     constexpr float SHADOW_BIAS = 0.0005f;      // Bias to reduce shadow acne
+
+    // Ambient/indirect light (keeps unlit faces from going black)
+    namespace Ambient {
+        // Overall ambient intensity multiplier.
+        constexpr float INTENSITY = 0.55f;
+
+        // Extra baseline ambient added on top of hemisphere ambient.
+        // Helps ensure walls never go near-black even if the hemisphere mix is dim.
+        constexpr float MIN = 0.08f;
+        // Simple hemisphere ambient colors.
+        // Sky is slightly blue; ground is neutral/darker.
+        constexpr float SKY_R = 0.62f;
+        constexpr float SKY_G = 0.74f;
+        constexpr float SKY_B = 0.92f;
+        constexpr float GROUND_R = 0.26f;
+        constexpr float GROUND_G = 0.26f;
+        constexpr float GROUND_B = 0.28f;
+    }
+
+    // Shadow tuning
+    namespace Shadows {
+        // 1.0 = full shadowing, 0.0 = shadows disabled.
+        constexpr float STRENGTH = 0.45f;
+    }
     
     // Sun/Directional Light
     namespace Sun {

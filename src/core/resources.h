@@ -83,6 +83,12 @@ namespace Shaders {
         constexpr const char* VERTEX = "src/assets/shaders/skybox/skybox.vert";
         constexpr const char* FRAGMENT = "src/assets/shaders/skybox/skybox.frag";
     }
+
+    // Wireframe rendering (unlit)
+    namespace Wireframe {
+        constexpr const char* VERTEX = "src/assets/shaders/wireframe/wireframe.vert";
+        constexpr const char* FRAGMENT = "src/assets/shaders/wireframe/wireframe.frag";
+    }
 }
 
 // ============================================================================

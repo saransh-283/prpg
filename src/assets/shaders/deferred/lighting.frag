@@ -15,6 +15,15 @@ uniform vec3 sunColor;
 uniform float sunIntensity;
 uniform mat4 lightSpaceMatrix;
 
+// Ambient (hemisphere) lighting
+uniform float ambientIntensity;
+uniform float ambientMin;
+uniform vec3 ambientSkyColor;
+uniform vec3 ambientGroundColor;
+
+// Shadow intensity control
+uniform float shadowStrength;
+
 float ShadowCalculation(vec4 fragPosLightSpace, vec3 normal, vec3 lightDir)
 {
     // Perform perspective divide
@@ -77,8 +86,11 @@ void main()
     else
         Normal = Normal / nLen;
     
-    // Ambient lighting
-    vec3 ambient = 0.15 * Albedo;
+    // Ambient lighting (hemisphere: sky above, ground below)
+    // Keeps non-sun-facing surfaces from going nearly black.
+    float hemi = clamp(Normal.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 ambientColor = mix(ambientGroundColor, ambientSkyColor, hemi);
+    vec3 ambient = (ambientIntensity * ambientColor + vec3(max(ambientMin, 0.0))) * Albedo;
     
     // Directional light (sun)
     vec3 lightDir = normalize(-sunDirection);
@@ -96,7 +108,8 @@ void main()
     float shadow = ShadowCalculation(fragPosLightSpace, Normal, lightDir);
     
     // Combine lighting (apply shadow only to diffuse and specular, not ambient)
-    vec3 lighting = ambient + (1.0 - shadow) * (diffuse + specular);
+    float shadowFactor = 1.0 - clamp(shadowStrength, 0.0, 1.0) * shadow;
+    vec3 lighting = ambient + shadowFactor * (diffuse + specular);
     
     FragColor = vec4(lighting, 1.0);
 }

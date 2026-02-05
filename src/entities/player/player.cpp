@@ -125,7 +125,7 @@ void Player::ApplyGravity(float deltaTime)
 void Player::CheckGroundCollision()
 {
     // Ensure player stays above terrain
-    float groundY = SampleTerrainHeight(cameraPos.x, cameraPos.z) + 0.5f; // eye offset
+    float groundY = SampleTerrainHeight(cameraPos.x, cameraPos.z) + Config::Player::EYE_HEIGHT;
     if (cameraPos.y <= groundY) {
         cameraPos.y = groundY;
         velocity.y = 0.0f;

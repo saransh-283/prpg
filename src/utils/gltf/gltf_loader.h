@@ -19,6 +19,12 @@ struct GLTFMesh {
     unsigned int triangleCount;
     std::vector<GLTFBone> bones;
     std::vector<glm::mat4> boneTransforms; // Current bone transformations
+
+    // Axis-aligned bounding box in the mesh's local space (from POSITION data).
+    // Useful for placement/grounding without keeping CPU-side vertex arrays.
+    bool hasAabb = false;
+    glm::vec3 aabbMin = glm::vec3(0.0f);
+    glm::vec3 aabbMax = glm::vec3(0.0f);
     // Images embedded or referenced by the glTF/glb
     struct Image {
         std::string name;

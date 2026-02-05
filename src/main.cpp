@@ -93,6 +93,14 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // Enable VSync (best-effort). Some drivers may not support it.
+    if (SDL_GL_SetSwapInterval(1) != 0) {
+        // Try adaptive VSync if regular VSync isn't supported.
+        if (SDL_GL_SetSwapInterval(-1) != 0) {
+            std::cerr << "Warning: Failed to enable VSync: " << SDL_GetError() << std::endl;
+        }
+    }
+
     std::cout << "OpenGL: " << glGetString(GL_VERSION) << std::endl;
 
     glViewport(0, 0, windowW, windowH);
@@ -160,7 +168,7 @@ int main(int argc, char *argv[])
                 if (glm::length(candidate - glm::vec2(initialCameraPos.x, initialCameraPos.z)) > 0.1f) {
                     initialCameraPos.x = candidate.x;
                     initialCameraPos.z = candidate.y;
-                    initialCameraPos.y = SampleTerrainHeight(candidate.x, candidate.y) + Config::Camera::HEIGHT_OFFSET;
+                    initialCameraPos.y = SampleTerrainHeight(candidate.x, candidate.y) + Config::Player::EYE_HEIGHT;
                     // Skip the remaining chunk-generation tasks only; keep essential tasks (e.g., NPC init).
                     ClearLoadingTasksWithPrefix("Gen");
                 }
@@ -185,7 +193,7 @@ int main(int argc, char *argv[])
         // store the spawn into the initialCameraPos variable capture; main will use it
         initialCameraPos.x = spawn.x;
         initialCameraPos.z = spawn.y;
-        initialCameraPos.y = SampleTerrainHeight(spawn.x, spawn.y) + Config::Camera::HEIGHT_OFFSET;
+        initialCameraPos.y = SampleTerrainHeight(spawn.x, spawn.y) + Config::Player::EYE_HEIGHT;
         return true;
     }, "DetermineSpawn");
 
@@ -288,6 +296,13 @@ int main(int argc, char *argv[])
     {
         std::cerr << "Failed to load 3D shader program" << std::endl;
         program3D = 0;
+    }
+
+    static GLuint wireframeProgram = 0;
+    if (!wireframeProgram && !LoadShaderProgram(Resources::Shaders::Wireframe::VERTEX, Resources::Shaders::Wireframe::FRAGMENT, wireframeProgram))
+    {
+        std::cerr << "Failed to load wireframe shader program" << std::endl;
+        wireframeProgram = 0;
     }
 
     if (!markerSdfProgram && !LoadShaderProgram(Resources::Shaders::UI::MarkerSDF::VERTEX, Resources::Shaders::UI::MarkerSDF::FRAGMENT, markerSdfProgram))
@@ -458,16 +473,6 @@ int main(int argc, char *argv[])
         // Deferred passes must not blend into the G-buffer.
         glDisable(GL_BLEND);
 
-        // === SHADOW PASS ===
-        DeferredRenderer::BeginShadowPass();
-        glm::mat4 lightSpaceMatrix = DeferredRenderer::GetLightSpaceMatrix();
-        RenderTerrainToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix);
-        npcSystem.RenderToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix);
-        DeferredRenderer::EndShadowPass();
-
-        // === GEOMETRY PASS (render to G-buffer) ===
-        DeferredRenderer::BeginGeometryPass();
-        
         // Update view matrix from player camera
         glm::vec3 cameraPos = player.GetPosition();
         glm::vec3 cameraFront = player.GetFront();
@@ -477,22 +482,53 @@ int main(int argc, char *argv[])
         // Update terrain generation around camera
         UpdateTerrain(cameraPos);
 
-        // Render world geometry to G-buffer
-        RenderTerrainToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view);
-        npcSystem.RenderToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view);
-        
-        DeferredRenderer::EndGeometryPass();
+        if (wireframeMode) {
+            // Wireframe mode: no deferred lighting/shadows.
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glViewport(0, 0, windowW, windowH);
+            glEnable(GL_DEPTH_TEST);
+            glDisable(GL_BLEND);
+            glDisable(GL_CULL_FACE);
 
-        // === LIGHTING PASS (deferred shading) ===
-        // Reset to default framebuffer and viewport
-        glViewport(0, 0, windowW, windowH);
-        DeferredRenderer::LightingPass(view, proj, cameraPos);
+            // A brighter background helps readability when we skip the skybox.
+            glClearColor(0.62f, 0.74f, 0.92f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        // Copy depth buffer from G-buffer to default framebuffer for forward rendering
-        DeferredRenderer::CopyDepthToDefaultFramebuffer();
+            // Render scene geometry directly with an unlit shader.
+            const GLuint wf = wireframeProgram ? wireframeProgram : DeferredRenderer::GetGeometryShader();
+            RenderTerrainToGBuffer(wf, proj, view);
+            npcSystem.RenderToGBuffer(wf, proj, view);
+        } else {
+            // Restore default clear color; skybox will cover anyway.
+            glClearColor(0.1f, 0.1f, 0.12f, 1.0f);
 
-        // === SKYBOX PASS (render after lighting but before HUD) ===
-        Skybox::Render(view, proj);
+            // === SHADOW PASS ===
+            DeferredRenderer::BeginShadowPass();
+            glm::mat4 lightSpaceMatrix = DeferredRenderer::GetLightSpaceMatrix();
+            RenderTerrainToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix);
+            npcSystem.RenderToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix);
+            DeferredRenderer::EndShadowPass();
+
+            // === GEOMETRY PASS (render to G-buffer) ===
+            DeferredRenderer::BeginGeometryPass();
+
+            // Render world geometry to G-buffer
+            RenderTerrainToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view);
+            npcSystem.RenderToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view);
+
+            DeferredRenderer::EndGeometryPass();
+
+            // === LIGHTING PASS (deferred shading) ===
+            // Reset to default framebuffer and viewport
+            glViewport(0, 0, windowW, windowH);
+            DeferredRenderer::LightingPass(view, proj, cameraPos);
+
+            // Copy depth buffer from G-buffer to default framebuffer for forward rendering
+            DeferredRenderer::CopyDepthToDefaultFramebuffer();
+
+            // === SKYBOX PASS (render after lighting but before HUD) ===
+            Skybox::Render(view, proj);
+        }
 
         // HUD/UI uses alpha blending.
         glEnable(GL_BLEND);

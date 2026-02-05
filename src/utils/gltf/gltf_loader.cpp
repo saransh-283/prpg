@@ -2,6 +2,8 @@
 #include <iostream>
 #include <cstring>
 
+#include <limits>
+
 #define GLM_ENABLE_EXPERIMENTAL
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
@@ -14,6 +16,10 @@
 GLTFMesh LoadGLTFMesh(const std::string& filePath) {
     GLTFMesh gltfMesh;
     gltfMesh.triangleCount = 0;
+    gltfMesh.hasAabb = false;
+    const float inf = std::numeric_limits<float>::infinity();
+    gltfMesh.aabbMin = glm::vec3(inf);
+    gltfMesh.aabbMax = glm::vec3(-inf);
     
     tinygltf::Model model;
     tinygltf::TinyGLTF loader;
@@ -224,6 +230,21 @@ GLTFMesh LoadGLTFMesh(const std::string& filePath) {
             // Extract position data
             const float* positions = reinterpret_cast<const float*>(
                 &posBuffer.data[posBufferView.byteOffset + posAccessor.byteOffset]);
+
+            // Update local-space AABB from POSITION vertices.
+            // Note: accessor.count is number of vertices.
+            for (size_t vi = 0; vi < posAccessor.count; ++vi) {
+                const float x = positions[vi * 3 + 0];
+                const float y = positions[vi * 3 + 1];
+                const float z = positions[vi * 3 + 2];
+                gltfMesh.aabbMin.x = std::min(gltfMesh.aabbMin.x, x);
+                gltfMesh.aabbMin.y = std::min(gltfMesh.aabbMin.y, y);
+                gltfMesh.aabbMin.z = std::min(gltfMesh.aabbMin.z, z);
+                gltfMesh.aabbMax.x = std::max(gltfMesh.aabbMax.x, x);
+                gltfMesh.aabbMax.y = std::max(gltfMesh.aabbMax.y, y);
+                gltfMesh.aabbMax.z = std::max(gltfMesh.aabbMax.z, z);
+            }
+            gltfMesh.hasAabb = true;
             
             // Extract indices data
             const unsigned short* indices = reinterpret_cast<const unsigned short*>(

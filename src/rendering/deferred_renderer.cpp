@@ -1,6 +1,7 @@
 #include "deferred_renderer.h"
 #include <utils/shaders/shader_utils.h>
 #include <core/resources.h>
+#include <core/config.h>
 #include <glm/gtc/type_ptr.hpp>
 #include <iostream>
 
@@ -313,6 +314,15 @@ namespace DeferredRenderer {
         glUniform3fv(glGetUniformLocation(lightingShader, "sunDirection"), 1, glm::value_ptr(sun.direction));
         glUniform3fv(glGetUniformLocation(lightingShader, "sunColor"), 1, glm::value_ptr(sun.color));
         glUniform1f(glGetUniformLocation(lightingShader, "sunIntensity"), sun.intensity);
+
+        // Ambient (hemisphere) lighting + shadow tuning
+        glUniform1f(glGetUniformLocation(lightingShader, "ambientIntensity"), Config::Rendering::Ambient::INTENSITY);
+        glUniform1f(glGetUniformLocation(lightingShader, "ambientMin"), Config::Rendering::Ambient::MIN);
+        const glm::vec3 ambientSky(Config::Rendering::Ambient::SKY_R, Config::Rendering::Ambient::SKY_G, Config::Rendering::Ambient::SKY_B);
+        const glm::vec3 ambientGround(Config::Rendering::Ambient::GROUND_R, Config::Rendering::Ambient::GROUND_G, Config::Rendering::Ambient::GROUND_B);
+        glUniform3fv(glGetUniformLocation(lightingShader, "ambientSkyColor"), 1, glm::value_ptr(ambientSky));
+        glUniform3fv(glGetUniformLocation(lightingShader, "ambientGroundColor"), 1, glm::value_ptr(ambientGround));
+        glUniform1f(glGetUniformLocation(lightingShader, "shadowStrength"), Config::Rendering::Shadows::STRENGTH);
 
         glm::mat4 lightSpaceMatrix = GetLightSpaceMatrix();
         glUniformMatrix4fv(glGetUniformLocation(lightingShader, "lightSpaceMatrix"), 1, GL_FALSE, glm::value_ptr(lightSpaceMatrix));
