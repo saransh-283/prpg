@@ -1252,6 +1252,15 @@ void WorldToChunk(float x, float z, int &out_cx, int &out_cz) {
     out_cz = static_cast<int>(std::floor(z / ((g_chunkSize - 1) * g_scale)));
 }
 
+bool GetChunkRoadGrid(int cx, int cz, const std::vector<std::vector<int>>*& outGrid) {
+    outGrid = nullptr;
+    const auto it = g_chunks.find(keyFor(cx, cz));
+    if (it == g_chunks.end()) return false;
+    if (it->second.roadGrid.empty()) return false;
+    outGrid = &it->second.roadGrid;
+    return true;
+}
+
 static bool isBuildingCellGlobal(int cellX, int cellZ) {
     const int cellsPerChunk = g_chunkSize - 1;
     if (cellsPerChunk <= 0) return false;

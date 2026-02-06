@@ -59,6 +59,34 @@ namespace Shaders {
             constexpr const char* FRAGMENT = "src/assets/shaders/ui/marker_sdf.frag";
         }
     }
+
+    // Map / Minimap rendering (chunk-data driven)
+    namespace Map {
+        namespace Border {
+            constexpr const char* VERTEX = "src/assets/shaders/map/border/border.vert";
+            constexpr const char* FRAGMENT = "src/assets/shaders/map/border/border.frag";
+        }
+
+        namespace Highways {
+            constexpr const char* VERTEX = "src/assets/shaders/map/highways/highways.vert";
+            constexpr const char* FRAGMENT = "src/assets/shaders/map/highways/highways.frag";
+        }
+
+        namespace Roads {
+            constexpr const char* VERTEX = "src/assets/shaders/map/roads/roads.vert";
+            constexpr const char* FRAGMENT = "src/assets/shaders/map/roads/roads.frag";
+        }
+
+        namespace Streets {
+            constexpr const char* VERTEX = "src/assets/shaders/map/streets/streets.vert";
+            constexpr const char* FRAGMENT = "src/assets/shaders/map/streets/streets.frag";
+        }
+
+        namespace Buildings {
+            constexpr const char* VERTEX = "src/assets/shaders/map/buildings/buildings.vert";
+            constexpr const char* FRAGMENT = "src/assets/shaders/map/buildings/buildings.frag";
+        }
+    }
     
     // Deferred rendering
     namespace Deferred {

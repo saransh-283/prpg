@@ -150,6 +150,13 @@ int main(int argc, char *argv[])
     GLuint streetsShader = 0;
     GLuint buildingsShader = 0;
 
+    // Map shaders (chunk-data driven UI)
+    GLuint mapBorderShader = 0;
+    GLuint mapHighwaysShader = 0;
+    GLuint mapRoadsShader = 0;
+    GLuint mapStreetsShader = 0;
+    GLuint mapBuildingsShader = 0;
+
     // NPC system can be initialized during loading once a spawn position is known.
     NpcSystem npcSystem;
     bool npcInitialized = false;
@@ -369,6 +376,36 @@ int main(int argc, char *argv[])
         buildingsShader = 0;
     }
 
+    if (!mapBorderShader && !LoadShaderProgram(Resources::Shaders::Map::Border::VERTEX, Resources::Shaders::Map::Border::FRAGMENT, mapBorderShader))
+    {
+        std::cerr << "Failed to load map border shader program" << std::endl;
+        mapBorderShader = 0;
+    }
+
+    if (!mapHighwaysShader && !LoadShaderProgram(Resources::Shaders::Map::Highways::VERTEX, Resources::Shaders::Map::Highways::FRAGMENT, mapHighwaysShader))
+    {
+        std::cerr << "Failed to load map highways shader program" << std::endl;
+        mapHighwaysShader = 0;
+    }
+
+    if (!mapRoadsShader && !LoadShaderProgram(Resources::Shaders::Map::Roads::VERTEX, Resources::Shaders::Map::Roads::FRAGMENT, mapRoadsShader))
+    {
+        std::cerr << "Failed to load map roads shader program" << std::endl;
+        mapRoadsShader = 0;
+    }
+
+    if (!mapStreetsShader && !LoadShaderProgram(Resources::Shaders::Map::Streets::VERTEX, Resources::Shaders::Map::Streets::FRAGMENT, mapStreetsShader))
+    {
+        std::cerr << "Failed to load map streets shader program" << std::endl;
+        mapStreetsShader = 0;
+    }
+
+    if (!mapBuildingsShader && !LoadShaderProgram(Resources::Shaders::Map::Buildings::VERTEX, Resources::Shaders::Map::Buildings::FRAGMENT, mapBuildingsShader))
+    {
+        std::cerr << "Failed to load map buildings shader program" << std::endl;
+        mapBuildingsShader = 0;
+    }
+
     bool running = true;
     Uint32 lastTicks = SDL_GetTicks();
     bool wireframeMode = false;
@@ -391,7 +428,7 @@ int main(int argc, char *argv[])
 
     // Spawn point was computed during loading and cameraPos updated accordingly if available
 
-    // Initialize debug overlay (starts hidden)
+    // Initialize debug overlay
     InitDebugOverlay();
 
     // Initialize deferred renderer
@@ -582,17 +619,35 @@ int main(int argc, char *argv[])
                 glm::vec2 mapOffset(0.0f, 0.0f);
                 // We need to track the offset, so we'll pass it through the state
                 // The offset is already tracked internally in map.cpp
-                RenderMap(cameraPos, cameraFront, windowW, windowH, program3D, markerSdfProgram, terrainShader, highwaysShader, roadsShader, streetsShader, buildingsShader, true, glm::vec2(0.0f));
+                RenderMap(cameraPos, cameraFront, windowW, windowH,
+                          mapBorderShader,
+                          markerSdfProgram,
+                          0,
+                          mapHighwaysShader,
+                          mapRoadsShader,
+                          mapStreetsShader,
+                          mapBuildingsShader,
+                          true,
+                          glm::vec2(0.0f));
             } else {
-                RenderMap(cameraPos, cameraFront, windowW, windowH, program3D, markerSdfProgram, terrainShader, highwaysShader, roadsShader, streetsShader, buildingsShader, false, glm::vec2(0.0f));
+                RenderMap(cameraPos, cameraFront, windowW, windowH,
+                          mapBorderShader,
+                          markerSdfProgram,
+                          0,
+                          mapHighwaysShader,
+                          mapRoadsShader,
+                          mapStreetsShader,
+                          mapBuildingsShader,
+                          false,
+                          glm::vec2(0.0f));
             }
         }
 
         // NPC HUD labels (unlit, screen-space)
         npcSystem.RenderNameLabels(player.GetPosition(), proj, view, windowW, windowH);
 
-        // Debug overlay (hidden by default)
-        RenderDebugOverlay(windowW, windowH, wireframeMode, player.GetPosition());
+        // Debug overlay
+        RenderDebugOverlay(windowW, windowH, wireframeMode, player.GetPosition(), delta);
 
         SDL_GL_SwapWindow(window);
 

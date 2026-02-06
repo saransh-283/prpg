@@ -284,6 +284,7 @@ namespace Rendering {
 namespace UI {
     // Debug Overlay
     namespace Debug {
+        constexpr bool VISIBLE_BY_DEFAULT = true;
         constexpr float PADDING_X = 10.0f;   // Horizontal padding from screen edge
         constexpr float PADDING_Y = 10.0f;   // Vertical padding from screen edge
         constexpr float LINE_HEIGHT = 30.0f; // Height of each debug text line

@@ -44,6 +44,11 @@ bool CollidesWithBuilding(float x, float z, float radius);
 // Convert a world-space XZ position to chunk coordinates (cx, cz)
 void WorldToChunk(float x, float z, int &out_cx, int &out_cz);
 
+// Read-only access to a generated chunk's road-type grid.
+// Returns true if the chunk exists and has a populated grid.
+// The returned pointer remains valid until the chunk is unloaded.
+bool GetChunkRoadGrid(int cx, int cz, const std::vector<std::vector<int>>*& outGrid);
+
 // Generate a single terrain chunk with complete pipeline (terrain + highways + roads + streets)
 bool GenerateTerrainChunk(int cx, int cz);
 

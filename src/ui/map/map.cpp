@@ -5,6 +5,8 @@
 #include <array>
 #include <cmath>
 #include <vector>
+#include <unordered_map>
+#include <cstdint>
 
 #include <glad/glad.h>
 #include <glm/gtc/constants.hpp>
@@ -16,14 +18,34 @@
 
 static GLuint g_miniVAO = 0;
 static GLuint g_miniVBO = 0;
-static GLuint g_chunkBorderVAO = 0;
-static GLuint g_chunkBorderVBO = 0;
+static GLuint g_borderVAO = 0;
+static GLuint g_borderVBO = 0;
 static bool g_mapVisible = false;
 static glm::vec2 g_mapOffset(0.0f, 0.0f);
 static float g_mapZoom = Config::UI::Map::ZOOM_DEFAULT;
 static GLuint g_markerSdfTex = 0;
 static int g_markerSdfW = 0;
 static int g_markerSdfH = 0;
+
+struct ChunkMapDrawCache {
+    GLuint vao = 0;
+    GLuint vbo = 0;
+
+    int highwayFirst = 0;
+    int highwayCount = 0;
+    int roadFirst = 0;
+    int roadCount = 0;
+    int streetFirst = 0;
+    int streetCount = 0;
+    int buildingFirst = 0;
+    int buildingCount = 0;
+
+    std::uint64_t lastUsedFrame = 0;
+};
+
+static std::unordered_map<long long, ChunkMapDrawCache> g_chunkDrawCache;
+static std::uint64_t g_mapFrameCounter = 0;
+static constexpr size_t MAX_CHUNK_DRAW_CACHE = 256;
 
 namespace {
     inline glm::vec2 SafeNormalize2(const glm::vec2& v, const glm::vec2& fallback) {
@@ -78,13 +100,14 @@ bool InitMap() {
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
     glBindVertexArray(0);
-    
-    // Initialize chunk border rendering (dynamic buffer for lines)
-    glGenVertexArrays(1, &g_chunkBorderVAO);
-    glGenBuffers(1, &g_chunkBorderVBO);
-    glBindVertexArray(g_chunkBorderVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, g_chunkBorderVBO);
-    glBufferData(GL_ARRAY_BUFFER, 10000 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+
+    // Map border (solid quads in clip space; updated per viewport size)
+    glGenVertexArrays(1, &g_borderVAO);
+    glGenBuffers(1, &g_borderVBO);
+    glBindVertexArray(g_borderVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, g_borderVBO);
+    // 4 edges * 2 triangles * 3 verts = 24 vertices, each 3 floats
+    glBufferData(GL_ARRAY_BUFFER, 24 * 3 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glBindVertexArray(0);
@@ -187,11 +210,212 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
 
     glViewport(miniX, miniY, miniW, miniH);
 
-    // Render terrain top-down using the specialized per-layer shaders
-    RenderTerrain(terrainProgram, highwaysProgram, roadsProgram, streetsProgram, buildingsProgram, projMini, viewMini);
+    // Render map directly from chunk road-grid data (no top-down world geometry rendering)
+    (void)terrainProgram;
+    (void)highwaysProgram;
+    (void)roadsProgram;
+    (void)streetsProgram;
+    (void)buildingsProgram;
+
+    const glm::mat4 mvpMini = projMini * viewMini * glm::mat4(1.0f);
+
+    auto emitQuadXZ = [](std::vector<float>& out, float x0, float z0, float x1, float z1) {
+        const float y = 0.0f;
+        // Two triangles: (x0,z0)-(x0,z1)-(x1,z0) and (x1,z0)-(x0,z1)-(x1,z1)
+        out.push_back(x0); out.push_back(y); out.push_back(z0);
+        out.push_back(x0); out.push_back(y); out.push_back(z1);
+        out.push_back(x1); out.push_back(y); out.push_back(z0);
+
+        out.push_back(x1); out.push_back(y); out.push_back(z0);
+        out.push_back(x0); out.push_back(y); out.push_back(z1);
+        out.push_back(x1); out.push_back(y); out.push_back(z1);
+    };
+
+    auto buildChunkCache = [&](int chunkCx, int chunkCz) -> bool {
+        const std::vector<std::vector<int>>* gridPtr = nullptr;
+        if (!GetChunkRoadGrid(chunkCx, chunkCz, gridPtr) || !gridPtr) return false;
+        const auto& grid = *gridPtr;
+        if (grid.empty() || grid[0].empty()) return false;
+
+        const int gridSizeZ = static_cast<int>(grid.size());
+        const int gridSizeX = static_cast<int>(grid[0].size());
+        if (gridSizeX < 2 || gridSizeZ < 2) return false;
+
+        std::vector<float> vHighway;
+        std::vector<float> vRoad;
+        std::vector<float> vStreet;
+        std::vector<float> vBuilding;
+
+        const float spacing = Config::World::VERTEX_SPACING;
+        const float chunkOriginX = (static_cast<float>(chunkCx) * static_cast<float>(Config::World::CHUNK_SIZE - 1)) * spacing;
+        const float chunkOriginZ = (static_cast<float>(chunkCz) * static_cast<float>(Config::World::CHUNK_SIZE - 1)) * spacing;
+
+        for (int z = 0; z < gridSizeZ - 1; ++z) {
+            for (int x = 0; x < gridSizeX - 1; ++x) {
+                const int t = grid[z][x];
+                if (t == TERRAIN) continue;
+
+                const float x0 = chunkOriginX + static_cast<float>(x) * spacing;
+                const float z0 = chunkOriginZ + static_cast<float>(z) * spacing;
+                const float x1 = x0 + spacing;
+                const float z1 = z0 + spacing;
+
+                switch (t) {
+                    case HIGHWAY:  emitQuadXZ(vHighway, x0, z0, x1, z1); break;
+                    case ROAD:     emitQuadXZ(vRoad, x0, z0, x1, z1); break;
+                    case STREET:   emitQuadXZ(vStreet, x0, z0, x1, z1); break;
+                    case BUILDING: emitQuadXZ(vBuilding, x0, z0, x1, z1); break;
+                    default: break;
+                }
+            }
+        }
+
+        std::vector<float> vertices;
+        vertices.reserve(vHighway.size() + vRoad.size() + vStreet.size() + vBuilding.size());
+
+        ChunkMapDrawCache cache;
+        cache.highwayFirst = 0;
+        cache.highwayCount = static_cast<int>(vHighway.size() / 3);
+        vertices.insert(vertices.end(), vHighway.begin(), vHighway.end());
+
+        cache.roadFirst = cache.highwayFirst + cache.highwayCount;
+        cache.roadCount = static_cast<int>(vRoad.size() / 3);
+        vertices.insert(vertices.end(), vRoad.begin(), vRoad.end());
+
+        cache.streetFirst = cache.roadFirst + cache.roadCount;
+        cache.streetCount = static_cast<int>(vStreet.size() / 3);
+        vertices.insert(vertices.end(), vStreet.begin(), vStreet.end());
+
+        cache.buildingFirst = cache.streetFirst + cache.streetCount;
+        cache.buildingCount = static_cast<int>(vBuilding.size() / 3);
+        vertices.insert(vertices.end(), vBuilding.begin(), vBuilding.end());
+
+        const long long k = keyFor(chunkCx, chunkCz);
+        auto& dst = g_chunkDrawCache[k];
+
+        if (dst.vao) glDeleteVertexArrays(1, &dst.vao);
+        if (dst.vbo) glDeleteBuffers(1, &dst.vbo);
+        dst = cache;
+
+        if (vertices.empty()) {
+            dst.lastUsedFrame = g_mapFrameCounter;
+            return true;
+        }
+
+        glGenVertexArrays(1, &dst.vao);
+        glGenBuffers(1, &dst.vbo);
+        glBindVertexArray(dst.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, dst.vbo);
+        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glBindVertexArray(0);
+
+        dst.lastUsedFrame = g_mapFrameCounter;
+        return true;
+    };
+
+    ++g_mapFrameCounter;
+
+    // Determine visible chunk range (use worldRadius in Z; X uses aspect-corrected radius)
+    const float chunkWorldSize = (Config::World::CHUNK_SIZE - 1) * Config::World::VERTEX_SPACING;
+    const int minChunkX = static_cast<int>(std::floor((cx - worldRadiusX) / chunkWorldSize));
+    const int maxChunkX = static_cast<int>(std::ceil((cx + worldRadiusX) / chunkWorldSize));
+    const int minChunkZ = static_cast<int>(std::floor((cz - worldRadiusY) / chunkWorldSize));
+    const int maxChunkZ = static_cast<int>(std::ceil((cz + worldRadiusY) / chunkWorldSize));
+
+    // Track the rectangular bounds of chunks that actually exist / can be fetched.
+    bool haveChunkBounds = false;
+    int presentMinCx = 0;
+    int presentMaxCx = 0;
+    int presentMinCz = 0;
+    int presentMaxCz = 0;
+
+    // Soft-prune cache if it grows too large (simple LRU by lastUsedFrame)
+    if (g_chunkDrawCache.size() > MAX_CHUNK_DRAW_CACHE) {
+        long long oldestKey = 0;
+        std::uint64_t oldestFrame = UINT64_MAX;
+        for (const auto& kv : g_chunkDrawCache) {
+            if (kv.second.lastUsedFrame < oldestFrame) {
+                oldestFrame = kv.second.lastUsedFrame;
+                oldestKey = kv.first;
+            }
+        }
+        auto it = g_chunkDrawCache.find(oldestKey);
+        if (it != g_chunkDrawCache.end()) {
+            if (it->second.vao) glDeleteVertexArrays(1, &it->second.vao);
+            if (it->second.vbo) glDeleteBuffers(1, &it->second.vbo);
+            g_chunkDrawCache.erase(it);
+        }
+    }
+
+    GLboolean depthWasEnabled = glIsEnabled(GL_DEPTH_TEST);
+    if (depthWasEnabled) glDisable(GL_DEPTH_TEST);
+    GLboolean cullWasEnabled = glIsEnabled(GL_CULL_FACE);
+    if (cullWasEnabled) glDisable(GL_CULL_FACE);
+
+    for (int chunkCz = minChunkZ; chunkCz <= maxChunkZ; ++chunkCz) {
+        for (int chunkCx = minChunkX; chunkCx <= maxChunkX; ++chunkCx) {
+            const long long k = keyFor(chunkCx, chunkCz);
+            auto it = g_chunkDrawCache.find(k);
+            if (it == g_chunkDrawCache.end()) {
+                if (!buildChunkCache(chunkCx, chunkCz)) {
+                    continue;
+                }
+                it = g_chunkDrawCache.find(k);
+                if (it == g_chunkDrawCache.end()) continue;
+            }
+
+            // This chunk exists (GetChunkRoadGrid succeeded at least once) and is part of the map area.
+            if (!haveChunkBounds) {
+                haveChunkBounds = true;
+                presentMinCx = presentMaxCx = chunkCx;
+                presentMinCz = presentMaxCz = chunkCz;
+            } else {
+                presentMinCx = std::min(presentMinCx, chunkCx);
+                presentMaxCx = std::max(presentMaxCx, chunkCx);
+                presentMinCz = std::min(presentMinCz, chunkCz);
+                presentMaxCz = std::max(presentMaxCz, chunkCz);
+            }
+
+            it->second.lastUsedFrame = g_mapFrameCounter;
+            if (!it->second.vao) continue;
+            glBindVertexArray(it->second.vao);
+
+            if (it->second.highwayCount > 0 && highwaysProgram) {
+                glUseProgram(highwaysProgram);
+                const GLint loc = glGetUniformLocation(highwaysProgram, "uMVP");
+                glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvpMini));
+                glDrawArrays(GL_TRIANGLES, it->second.highwayFirst, it->second.highwayCount);
+            }
+            if (it->second.roadCount > 0 && roadsProgram) {
+                glUseProgram(roadsProgram);
+                const GLint loc = glGetUniformLocation(roadsProgram, "uMVP");
+                glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvpMini));
+                glDrawArrays(GL_TRIANGLES, it->second.roadFirst, it->second.roadCount);
+            }
+            if (it->second.streetCount > 0 && streetsProgram) {
+                glUseProgram(streetsProgram);
+                const GLint loc = glGetUniformLocation(streetsProgram, "uMVP");
+                glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvpMini));
+                glDrawArrays(GL_TRIANGLES, it->second.streetFirst, it->second.streetCount);
+            }
+            if (it->second.buildingCount > 0 && buildingsProgram) {
+                glUseProgram(buildingsProgram);
+                const GLint loc = glGetUniformLocation(buildingsProgram, "uMVP");
+                glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvpMini));
+                glDrawArrays(GL_TRIANGLES, it->second.buildingFirst, it->second.buildingCount);
+            }
+
+            glBindVertexArray(0);
+        }
+    }
+
+    glUseProgram(0);
+    if (cullWasEnabled) glEnable(GL_CULL_FACE);
+    if (depthWasEnabled) glEnable(GL_DEPTH_TEST);
 
     // Shared MVP for HUD map rendering (marker + borders).
-    glm::mat4 mvpMini = projMini * viewMini * glm::mat4(1.0f);
 
     // Player marker: rounded-bottom triangle pointing in facing direction
     // Use minimap marker size if small map, full map marker size if full screen
@@ -280,60 +504,108 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
         glUseProgram(0);
     }
 
-    // Render chunk borders when in full map mode
-    if (showFullMap) {
-        // Calculate chunk size in world units
-        float chunkWorldSize = (Config::World::CHUNK_SIZE - 1) * Config::World::VERTEX_SPACING;
-        
-        // Determine visible chunk range
-        int minChunkX = static_cast<int>(std::floor((cx - worldRadius) / chunkWorldSize));
-        int maxChunkX = static_cast<int>(std::ceil((cx + worldRadius) / chunkWorldSize));
-        int minChunkZ = static_cast<int>(std::floor((cz - worldRadius) / chunkWorldSize));
-        int maxChunkZ = static_cast<int>(std::ceil((cz + worldRadius) / chunkWorldSize));
-        
-        std::vector<float> borderVerts;
-        float borderY = Config::UI::Map::CHUNK_BORDER_HEIGHT;
-        
-        // Generate vertical lines (along X axis)
-        for (int chunkX = minChunkX; chunkX <= maxChunkX; ++chunkX) {
-            float worldX = chunkX * chunkWorldSize;
-            borderVerts.push_back(worldX);
-            borderVerts.push_back(borderY);
-            borderVerts.push_back(cz - worldRadius - chunkWorldSize);
-            
-            borderVerts.push_back(worldX);
-            borderVerts.push_back(borderY);
-            borderVerts.push_back(cz + worldRadius + chunkWorldSize);
+    // Map border: full-map only, and sized to the chunk area (not the whole window)
+    if (showFullMap && haveChunkBounds && solidColorProgram && g_borderVAO) {
+        GLboolean depthEnabledBefore = glIsEnabled(GL_DEPTH_TEST);
+        if (depthEnabledBefore) glDisable(GL_DEPTH_TEST);
+        GLboolean cullEnabledBefore = glIsEnabled(GL_CULL_FACE);
+        if (cullEnabledBefore) glDisable(GL_CULL_FACE);
+
+        // Build a border with a fixed pixel thickness.
+        // Using quads avoids line rasterization edge cases.
+        const float thicknessPx = 4.0f;
+        const float tx = (miniW > 0) ? (2.0f * thicknessPx / static_cast<float>(miniW)) : 0.01f;
+        const float ty = (miniH > 0) ? (2.0f * thicknessPx / static_cast<float>(miniH)) : 0.01f;
+
+        // Compute the chunk rect in clip space by transforming the chunk-world bounds through the map MVP.
+        const float xMinW = static_cast<float>(presentMinCx) * chunkWorldSize;
+        const float xMaxW = static_cast<float>(presentMaxCx + 1) * chunkWorldSize;
+        const float zMinW = static_cast<float>(presentMinCz) * chunkWorldSize;
+        const float zMaxW = static_cast<float>(presentMaxCz + 1) * chunkWorldSize;
+
+        const glm::vec4 c00 = mvpMini * glm::vec4(xMinW, 0.0f, zMinW, 1.0f);
+        const glm::vec4 c10 = mvpMini * glm::vec4(xMaxW, 0.0f, zMinW, 1.0f);
+        const glm::vec4 c11 = mvpMini * glm::vec4(xMaxW, 0.0f, zMaxW, 1.0f);
+        const glm::vec4 c01 = mvpMini * glm::vec4(xMinW, 0.0f, zMaxW, 1.0f);
+
+        const float ndcMinX = std::min(std::min(c00.x, c10.x), std::min(c11.x, c01.x));
+        const float ndcMaxX = std::max(std::max(c00.x, c10.x), std::max(c11.x, c01.x));
+        const float ndcMinY = std::min(std::min(c00.y, c10.y), std::min(c11.y, c01.y));
+        const float ndcMaxY = std::max(std::max(c00.y, c10.y), std::max(c11.y, c01.y));
+
+        // Outer rect expands outward by half thickness; inner rect shrinks inward by half thickness.
+        const float ox0 = ndcMinX - tx * 0.5f;
+        const float ox1 = ndcMaxX + tx * 0.5f;
+        const float oy0 = ndcMinY - ty * 0.5f;
+        const float oy1 = ndcMaxY + ty * 0.5f;
+
+        const float ix0 = ndcMinX + tx * 0.5f;
+        const float ix1 = ndcMaxX - tx * 0.5f;
+        const float iy0 = ndcMinY + ty * 0.5f;
+        const float iy1 = ndcMaxY - ty * 0.5f;
+
+        if (!(ix0 < ix1 && iy0 < iy1)) {
+            if (cullEnabledBefore) glEnable(GL_CULL_FACE);
+            if (depthEnabledBefore) glEnable(GL_DEPTH_TEST);
+            // Skip border if the chunk rect is too small / degenerate.
+            glClearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]);
+            glDisable(GL_SCISSOR_TEST);
+            glViewport(oldVp[0], oldVp[1], oldVp[2], oldVp[3]);
+            return;
         }
-        
-        // Generate horizontal lines (along Z axis)
-        for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; ++chunkZ) {
-            float worldZ = chunkZ * chunkWorldSize;
-            borderVerts.push_back(cx - worldRadius - chunkWorldSize);
-            borderVerts.push_back(borderY);
-            borderVerts.push_back(worldZ);
-            
-            borderVerts.push_back(cx + worldRadius + chunkWorldSize);
-            borderVerts.push_back(borderY);
-            borderVerts.push_back(worldZ);
-        }
-        
-        // Render chunk borders
-        if (!borderVerts.empty()) {
-            glBindVertexArray(g_chunkBorderVAO);
-            glBindBuffer(GL_ARRAY_BUFFER, g_chunkBorderVBO);
-            glBufferSubData(GL_ARRAY_BUFFER, 0, borderVerts.size() * sizeof(float), borderVerts.data());
-            
-            glUseProgram(solidColorProgram);
-            GLint locBorder = glGetUniformLocation(solidColorProgram, "uMVP");
-            GLint colorLocBorder = glGetUniformLocation(solidColorProgram, "uColor");
-            glUniformMatrix4fv(locBorder, 1, GL_FALSE, glm::value_ptr(mvpMini));
-            glUniform3f(colorLocBorder, Config::UI::Map::CHUNK_BORDER_R, Config::UI::Map::CHUNK_BORDER_G, Config::UI::Map::CHUNK_BORDER_B);
-            
-            glDrawArrays(GL_LINES, 0, borderVerts.size() / 3);
-            glBindVertexArray(0);
-            glUseProgram(0);
-        }
+
+        auto emitTri = [](float* dst, int& idx, float x, float y) {
+            dst[idx++] = x;
+            dst[idx++] = y;
+            dst[idx++] = 0.0f;
+        };
+
+        float borderVerts[24 * 3];
+        int out = 0;
+        // Top: (ox0, iy1)-(ox1, iy1)-(ox1, oy1)-(ox0, oy1)
+        emitTri(borderVerts, out, ox0, iy1);
+        emitTri(borderVerts, out, ox1, iy1);
+        emitTri(borderVerts, out, ox1, oy1);
+        emitTri(borderVerts, out, ox0, iy1);
+        emitTri(borderVerts, out, ox1, oy1);
+        emitTri(borderVerts, out, ox0, oy1);
+        // Bottom: (ox0, oy0)-(ox1, oy0)-(ox1, iy0)-(ox0, iy0)
+        emitTri(borderVerts, out, ox0, oy0);
+        emitTri(borderVerts, out, ox1, oy0);
+        emitTri(borderVerts, out, ox1, iy0);
+        emitTri(borderVerts, out, ox0, oy0);
+        emitTri(borderVerts, out, ox1, iy0);
+        emitTri(borderVerts, out, ox0, iy0);
+        // Left: (ox0, iy0)-(ix0, iy0)-(ix0, iy1)-(ox0, iy1)
+        emitTri(borderVerts, out, ox0, iy0);
+        emitTri(borderVerts, out, ix0, iy0);
+        emitTri(borderVerts, out, ix0, iy1);
+        emitTri(borderVerts, out, ox0, iy0);
+        emitTri(borderVerts, out, ix0, iy1);
+        emitTri(borderVerts, out, ox0, iy1);
+        // Right: (ix1, iy0)-(ox1, iy0)-(ox1, iy1)-(ix1, iy1)
+        emitTri(borderVerts, out, ix1, iy0);
+        emitTri(borderVerts, out, ox1, iy0);
+        emitTri(borderVerts, out, ox1, iy1);
+        emitTri(borderVerts, out, ix1, iy0);
+        emitTri(borderVerts, out, ox1, iy1);
+        emitTri(borderVerts, out, ix1, iy1);
+
+        glBindVertexArray(g_borderVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, g_borderVBO);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(borderVerts), borderVerts);
+
+        glUseProgram(solidColorProgram);
+        const GLint loc = glGetUniformLocation(solidColorProgram, "uMVP");
+        const glm::mat4 identity(1.0f);
+        glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(identity));
+
+        glDrawArrays(GL_TRIANGLES, 0, 24);
+        glBindVertexArray(0);
+        glUseProgram(0);
+
+        if (cullEnabledBefore) glEnable(GL_CULL_FACE);
+        if (depthEnabledBefore) glEnable(GL_DEPTH_TEST);
     }
 
     glClearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]);
@@ -342,15 +614,21 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
 }
 
 void CleanupMap() {
+    for (auto& kv : g_chunkDrawCache) {
+        if (kv.second.vbo) glDeleteBuffers(1, &kv.second.vbo);
+        if (kv.second.vao) glDeleteVertexArrays(1, &kv.second.vao);
+    }
+    g_chunkDrawCache.clear();
+
     if (g_miniVBO) glDeleteBuffers(1, &g_miniVBO);
     if (g_miniVAO) glDeleteVertexArrays(1, &g_miniVAO);
-    if (g_chunkBorderVBO) glDeleteBuffers(1, &g_chunkBorderVBO);
-    if (g_chunkBorderVAO) glDeleteVertexArrays(1, &g_chunkBorderVAO);
+    if (g_borderVBO) glDeleteBuffers(1, &g_borderVBO);
+    if (g_borderVAO) glDeleteVertexArrays(1, &g_borderVAO);
     if (g_markerSdfTex) glDeleteTextures(1, &g_markerSdfTex);
     g_miniVBO = 0;
     g_miniVAO = 0;
-    g_chunkBorderVBO = 0;
-    g_chunkBorderVAO = 0;
+    g_borderVBO = 0;
+    g_borderVAO = 0;
     g_markerSdfTex = 0;
     g_markerSdfW = 0;
     g_markerSdfH = 0;
