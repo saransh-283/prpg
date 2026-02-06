@@ -15,7 +15,8 @@
 #include <objects/models/3d/sphere/mesh.h>
 #include <utils/shaders/shader_utils.h>
 // LLM (loaded asynchronously after the loading screen)
-#include <utils/llm/llm.h>
+#include <utils/llm/init/init.h>
+#include <utils/llm/shutdown/shutdown.h>
 #include <filesystem>
 // Wireframe toggle for triangulated meshes
 #include <utils/triangulate/mesh.h>
