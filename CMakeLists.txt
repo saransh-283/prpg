@@ -75,8 +75,7 @@ if(TARGET gguf)
     target_link_libraries(${PROJECT_NAME} PRIVATE gguf)
 endif()
 
-# Copy assets and models into build dir
-file(COPY ${CMAKE_SOURCE_DIR}/src/models DESTINATION ${CMAKE_BINARY_DIR})
+# Copy assets into build dir
 file(COPY ${CMAKE_SOURCE_DIR}/src/assets DESTINATION ${CMAKE_BINARY_DIR})
 file(COPY ${CMAKE_SOURCE_DIR}/src/utils DESTINATION ${CMAKE_BINARY_DIR})
 file(COPY ${CMAKE_SOURCE_DIR}/src/entities/npc DESTINATION ${CMAKE_BINARY_DIR}/src/entities)
