@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 #include <glad/glad.h>
 #include <vector>
+#include <utils/frustum/frustum.h>
 
 // Road type enumeration matching the notebook
 enum RoadType {
@@ -25,8 +26,8 @@ void UpdateTerrain(const glm::vec3& cameraPos);
 // Render all generated terrain chunks using the provided shader programs and matrices
 void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsProgram, GLuint streetsProgram, GLuint buildingsProgram, const glm::mat4& proj, const glm::mat4& view);
 
-// Render terrain to G-buffer (deferred rendering)
-void RenderTerrainToGBuffer(GLuint geometryShader, const glm::mat4& proj, const glm::mat4& view);
+// Render terrain to G-buffer (deferred rendering) with frustum culling.
+void RenderTerrainToGBuffer(GLuint geometryShader, const glm::mat4& proj, const glm::mat4& view, const Frustum& frustum);
 
 // Render terrain to shadow map
 void RenderTerrainToShadowMap(GLuint shadowShader, const glm::mat4& lightSpaceMatrix);

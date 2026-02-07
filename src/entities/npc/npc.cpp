@@ -2,6 +2,7 @@
 
 #include <core/config.h>
 #include <core/resources.h>
+#include <core/prompts.h>
 #include <world/terrain/terrain.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -13,8 +14,11 @@
 #include <fstream>
 #include <iostream>
 #include <random>
+#include <sstream>
 
 #include <assets/objects/label/label.h>
+
+#include <utils/llm/init/init.h>
 
 #include <algorithm>
 #include <limits>
@@ -113,6 +117,11 @@ bool NpcSystem::Initialize(const glm::vec3& spawnCenter) {
 }
 
 void NpcSystem::Cleanup() {
+    // Join any running name-generation thread before tearing down.
+    if (nameGenThread.joinable()) {
+        nameGenThread.join();
+    }
+
     if (meshLoaded) {
         DestroyCustomMesh(mesh);
         meshLoaded = false;
@@ -120,6 +129,12 @@ void NpcSystem::Cleanup() {
     npcs.clear();
     palette01.clear();
     spawnedChunkKeys.clear();
+    pendingNameIds.clear();
+    queuedNameIds.clear();
+    recentNames.clear();
+    batchTimer = 0.0f;
+    batchWindowOpen = false;
+    generationRunning = false;
 }
 
 void NpcSystem::SpawnForChunk(int cx, int cz) {
@@ -257,6 +272,8 @@ void NpcSystem::GenerateDeterministicSpawns(const glm::vec3& spawnCenter) {
         inst.heightScale = hScale;
         inst.widthScale = wScale;
         inst.name = "Villager";
+        inst.id = (int)npcs.size();
+        inst.nameRequested = false;
 
         if (mesh.hasAabb) {
             const glm::mat4 local = baseModel * glm::scale(glm::mat4(1.0f), glm::vec3(wScale, hScale, wScale));
@@ -296,6 +313,8 @@ void NpcSystem::GenerateDeterministicSpawns(const glm::vec3& spawnCenter) {
         inst.heightScale = hScale;
         inst.widthScale = wScale;
         inst.name = "Villager";
+        inst.id = (int)npcs.size();
+        inst.nameRequested = false;
 
         if (mesh.hasAabb) {
             const glm::mat4 local = baseModel * glm::scale(glm::mat4(1.0f), glm::vec3(wScale, hScale, wScale));
@@ -402,6 +421,8 @@ void NpcSystem::GenerateDeterministicSpawnsForChunk(int cx, int cz) {
         inst.heightScale = hScale;
         inst.widthScale = wScale;
         inst.name = "Villager";
+        inst.id = (int)npcs.size();
+        inst.nameRequested = false;
 
         if (mesh.hasAabb) {
             const glm::mat4 local = baseModel * glm::scale(glm::mat4(1.0f), glm::vec3(wScale, hScale, wScale));
@@ -433,10 +454,20 @@ void NpcSystem::RenderNameLabels(const glm::vec3& playerPos, const glm::mat4& pr
     }
 }
 
-void NpcSystem::RenderInstancesCommon(GLuint shaderProgram, int modelLoc, const glm::mat4& baseModel) const {
+void NpcSystem::RenderInstancesCommon(GLuint shaderProgram, int modelLoc, const glm::mat4& baseModel, const Frustum* frustum) const {
     if (!meshLoaded) return;
 
     for (const auto& npc : npcs) {
+        // ── Per-NPC frustum cull (bounding sphere) ──
+        if (frustum) {
+            // Sphere center at NPC midpoint, radius encompasses the tallest scale.
+            const float halfH = npc.headLabelOffsetY * 0.5f;
+            const glm::vec3 center = npc.position + glm::vec3(0.0f, halfH, 0.0f);
+            const float radius = halfH + 0.5f; // generous margin
+            if (!frustum->TestSphere(center, radius))
+                continue;
+        }
+
         // Important: translate first, then apply baseModel so scaling/rotation don't affect the translation.
         glm::mat4 model(1.0f);
         model = glm::translate(model, npc.position);
@@ -456,7 +487,7 @@ void NpcSystem::RenderInstancesCommon(GLuint shaderProgram, int modelLoc, const 
     glBindVertexArray(0);
 }
 
-void NpcSystem::RenderToGBuffer(GLuint geometryShader, const glm::mat4& proj, const glm::mat4& view) const {
+void NpcSystem::RenderToGBuffer(GLuint geometryShader, const glm::mat4& proj, const glm::mat4& view, const Frustum& frustum) const {
     if (!meshLoaded || geometryShader == 0) return;
 
     glUseProgram(geometryShader);
@@ -473,7 +504,7 @@ void NpcSystem::RenderToGBuffer(GLuint geometryShader, const glm::mat4& proj, co
     baseModel = glm::rotate(baseModel, glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
     baseModel = glm::scale(baseModel, glm::vec3(0.22f));
 
-    RenderInstancesCommon(geometryShader, modelLoc, baseModel);
+    RenderInstancesCommon(geometryShader, modelLoc, baseModel, &frustum);
 }
 
 void NpcSystem::RenderToShadowMap(GLuint shadowShader, const glm::mat4& lightSpaceMatrix) const {
@@ -514,4 +545,247 @@ bool NpcSystem::CollidesXZ(float x, float z, float radius) const {
         if ((dx * dx + dz * dz) < rr2) return true;
     }
     return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Async NPC Name Generation
+// ─────────────────────────────────────────────────────────────────────────────
+
+void NpcSystem::UpdateNameGeneration(const glm::vec3& playerPos, float deltaTime) {
+    if (!meshLoaded) return;
+
+    const float radiusSq = Config::LLM::NPC_NAME_RADIUS * Config::LLM::NPC_NAME_RADIUS;
+
+    // ── 1. Detect unnamed NPCs within radius ────────────────────────────
+    {
+        std::lock_guard<std::mutex> lock(nameMutex);
+        for (auto& npc : npcs) {
+            if (npc.nameRequested) continue;
+
+            const float dx = npc.position.x - playerPos.x;
+            const float dz = npc.position.z - playerPos.z;
+            if ((dx * dx + dz * dz) > radiusSq) continue;
+
+            // First detection in this batch?
+            if (!batchWindowOpen) {
+                batchWindowOpen = true;
+                batchTimer = 0.0f;
+                std::cout << "[NPC-Names] First NPC detected nearby (id=" << npc.id
+                          << "), opening 2-second batch window." << std::endl;
+            }
+
+            npc.nameRequested = true;
+
+            // If a generation is already running, queue for the next batch.
+            if (generationRunning.load()) {
+                queuedNameIds.push_back(npc.id);
+            } else {
+                pendingNameIds.push_back(npc.id);
+            }
+        }
+    }
+
+    // ── 2. Advance batch timer ──────────────────────────────────────────
+    if (batchWindowOpen) {
+        batchTimer += deltaTime;
+    }
+
+    // ── 3. Fire when the window closes ──────────────────────────────────
+    if (batchWindowOpen && batchTimer >= Config::LLM::NPC_NAME_BATCH_WINDOW) {
+        std::lock_guard<std::mutex> lock(nameMutex);
+
+        batchWindowOpen = false;
+        batchTimer = 0.0f;
+
+        if (!pendingNameIds.empty() && !generationRunning.load()) {
+            std::cout << "[NPC-Names] Batch window closed. " << pendingNameIds.size()
+                      << " NPC(s) detected in 2 seconds; starting name generation."
+                      << std::endl;
+
+            std::vector<int> batch = std::move(pendingNameIds);
+            pendingNameIds.clear();
+            StartNameGeneration(std::move(batch));
+        }
+    }
+
+    // ── 4. If a previous generation finished and there is a queued batch,
+    //       start the next one. ──────────────────────────────────────────
+    if (!generationRunning.load()) {
+        // Join the finished thread, if any.
+        if (nameGenThread.joinable()) {
+            nameGenThread.join();
+        }
+
+        std::lock_guard<std::mutex> lock(nameMutex);
+        if (!queuedNameIds.empty()) {
+            std::cout << "[NPC-Names] Previous generation done. Starting queued batch of "
+                      << queuedNameIds.size() << " NPC(s)." << std::endl;
+
+            std::vector<int> batch = std::move(queuedNameIds);
+            queuedNameIds.clear();
+            StartNameGeneration(std::move(batch));
+        }
+    }
+}
+
+void NpcSystem::StartNameGeneration(std::vector<int> ids) {
+    // Must be called with nameMutex held.
+    if (ids.empty()) return;
+
+    generationRunning = true;
+
+    // Snapshot recent names for the prompt (read under lock).
+    std::vector<std::string> recentSnapshot(recentNames.begin(), recentNames.end());
+
+    // Detach-safe: capture this pointer (the NpcSystem outlives the thread
+    // because Cleanup() joins it).
+    nameGenThread = std::thread([this, ids = std::move(ids), recentSnapshot = std::move(recentSnapshot)]() {
+        // ── Wait for LLM to be ready ────────────────────────────────────
+        if (!is_llm_ready()) {
+            if (is_llm_loading()) {
+                std::cout << "[NPC-Names] Waiting for LLM model to finish loading..." << std::endl;
+                wait_for_llm_load();
+            }
+            if (!is_llm_ready()) {
+                std::cerr << "[NPC-Names] LLM not available; skipping name generation." << std::endl;
+                generationRunning = false;
+                return;
+            }
+        }
+
+        const int count = (int)ids.size();
+
+        // Log the exclusion list being sent to the LLM.
+        if (!recentSnapshot.empty()) {
+            std::string excludeLog = "[NPC-Names] Recent names (excluded): ";
+            for (size_t i = 0; i < recentSnapshot.size(); ++i) {
+                if (i > 0) excludeLog += ", ";
+                excludeLog += recentSnapshot[i];
+            }
+            std::cout << excludeLog << std::endl;
+        } else {
+            std::cout << "[NPC-Names] No recent names to exclude (first batch)." << std::endl;
+        }
+
+        std::string prompt = Prompts::NpcNameGeneration(count, recentSnapshot);
+
+        std::cout << "[NPC-Names] Generating " << count << " name(s) via LLM..." << std::endl;
+
+        // Clear LLM KV-cache so each generation starts fresh and doesn't
+        // repeat names from a previous conversation turn.
+        clear_llm_context();
+
+        std::string raw = generate_from_prompt(prompt);
+
+        // Build a lowercase set of recent names for fast duplicate checking.
+        auto toLower = [](std::string s) {
+            for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+            return s;
+        };
+        std::unordered_set<std::string> recentSet;
+        for (const auto& n : recentSnapshot) recentSet.insert(toLower(n));
+
+        // ── Parse response: one name per line ───────────────────────────
+        std::vector<std::string> names;
+        {
+            std::istringstream iss(raw);
+            std::string line;
+            while (std::getline(iss, line)) {
+                // Trim whitespace
+                size_t start = line.find_first_not_of(" \t\r\n");
+                if (start == std::string::npos) continue;
+                size_t end = line.find_last_not_of(" \t\r\n");
+                std::string trimmed = line.substr(start, end - start + 1);
+
+                // Skip empty or too-long lines
+                if (trimmed.empty() || trimmed.size() > 30) continue;
+
+                // Remove leading numbering (e.g., "1. ", "1) ")
+                if (!trimmed.empty() && std::isdigit(trimmed[0])) {
+                    size_t pos = trimmed.find_first_of(".) ");
+                    if (pos != std::string::npos && pos < 4) {
+                        size_t nameStart = trimmed.find_first_not_of(" \t", pos + 1);
+                        if (nameStart != std::string::npos) {
+                            trimmed = trimmed.substr(nameStart);
+                        }
+                    }
+                }
+
+                // Take only the first word as the name (in case the LLM added descriptions)
+                {
+                    size_t spacePos = trimmed.find(' ');
+                    if (spacePos != std::string::npos) {
+                        trimmed = trimmed.substr(0, spacePos);
+                    }
+                }
+
+                if (trimmed.empty()) continue;
+
+                // ── Post-generation duplicate check (case-insensitive) ──
+                std::string lowerName = toLower(trimmed);
+                if (recentSet.count(lowerName)) {
+                    std::cout << "[NPC-Names] Skipping duplicate name from LLM: " << trimmed << std::endl;
+                    continue;
+                }
+
+                // Also guard against duplicates within this same batch.
+                recentSet.insert(lowerName);
+                names.push_back(trimmed);
+            }
+        }
+
+        // ── Assign names to NPCs ────────────────────────────────────────
+        {
+            std::lock_guard<std::mutex> lock(nameMutex);
+
+            // Re-read recentNames under lock to also exclude names that may
+            // have been added by another thread between snapshot and now.
+            for (const auto& n : recentNames) recentSet.insert(toLower(n));
+
+            std::string logMsg = "[NPC-Names] Generated names: ";
+            size_t nameIdx = 0;
+            for (size_t i = 0; i < ids.size(); ++i) {
+                const int id = ids[i];
+
+                // Pick the next non-duplicate name from the parsed list.
+                std::string assignedName;
+                while (nameIdx < names.size()) {
+                    std::string candidate = names[nameIdx++];
+                    std::string lower = toLower(candidate);
+                    // Final duplicate guard against recentNames updated in the meantime.
+                    if (!recentSet.count(lower) || nameIdx <= ids.size()) {
+                        assignedName = candidate;
+                        break;
+                    }
+                }
+                if (assignedName.empty()) {
+                    assignedName = (nameIdx <= names.size() && !names.empty())
+                                       ? names[std::min(nameIdx, names.size()) - 1]
+                                       : "Villager";
+                }
+
+                // Find the NPC by id and assign.
+                for (auto& npc : npcs) {
+                    if (npc.id == id) {
+                        npc.name = assignedName;
+                        break;
+                    }
+                }
+
+                // Update recent names ring-buffer.
+                recentNames.push_back(assignedName);
+                if ((int)recentNames.size() > Config::LLM::NPC_NAME_HISTORY_SIZE) {
+                    recentNames.pop_front();
+                }
+                recentSet.insert(toLower(assignedName));
+
+                if (i > 0) logMsg += ", ";
+                logMsg += assignedName;
+            }
+
+            std::cout << logMsg << std::endl;
+        }
+
+        generationRunning = false;
+    });
 }

@@ -16,6 +16,7 @@
 #include <utils/shaders/shader_utils.h>
 // LLM (loaded asynchronously after the loading screen)
 #include <utils/llm/init/init.h>
+#include <utils/llm/interrupt/interrupt.h>
 #include <utils/llm/shutdown/shutdown.h>
 #include <filesystem>
 // Wireframe toggle for triangulated meshes
@@ -33,6 +34,8 @@
 // Deferred renderer and skybox
 #include <rendering/deferred_renderer.h>
 #include <rendering/skybox.h>
+// Frustum culling
+#include <utils/frustum/frustum.h>
 
 namespace {
 volatile std::sig_atomic_t g_terminateRequested = 0;
@@ -43,6 +46,12 @@ void HandleTerminateSignal(int) {
 
 bool TerminateRequested() {
     return g_terminateRequested != 0;
+}
+
+void InterruptLLMIfGenerating() {
+    if (is_llm_generating()) {
+        interrupt_llm_generation();
+    }
 }
 }
 
@@ -271,6 +280,8 @@ int main(int argc, char *argv[])
         while (SDL_PollEvent(&e))
         {
             if (e.type == SDL_QUIT) {
+                InterruptLLMIfGenerating();
+                shutdown_llm();
                 SDL_GL_DeleteContext(glContext);
                 SDL_DestroyWindow(window);
                 SDL_Quit();
@@ -278,6 +289,8 @@ int main(int argc, char *argv[])
             }
 
             if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) {
+                InterruptLLMIfGenerating();
+                shutdown_llm();
                 SDL_GL_DeleteContext(glContext);
                 SDL_DestroyWindow(window);
                 SDL_Quit();
@@ -286,6 +299,8 @@ int main(int argc, char *argv[])
         }
 
         if (TerminateRequested()) {
+            InterruptLLMIfGenerating();
+            shutdown_llm();
             SDL_GL_DeleteContext(glContext);
             SDL_DestroyWindow(window);
             SDL_Quit();
@@ -463,6 +478,7 @@ int main(int argc, char *argv[])
     while (running)
     {
         if (TerminateRequested()) {
+            InterruptLLMIfGenerating();
             running = false;
         }
 
@@ -473,12 +489,16 @@ int main(int argc, char *argv[])
         SDL_Event e;
         while (SDL_PollEvent(&e))
         {
-            if (e.type == SDL_QUIT)
+            if (e.type == SDL_QUIT) {
+                InterruptLLMIfGenerating();
                 running = false;
+            }
             if (e.type == SDL_KEYDOWN)
             {
-                if (e.key.keysym.sym == SDLK_ESCAPE)
+                if (e.key.keysym.sym == SDLK_ESCAPE) {
+                    InterruptLLMIfGenerating();
                     running = false;
+                }
                 // Toggle map with 'M' key
                 if (e.key.keysym.sym == SDLK_m)
                 {
@@ -536,6 +556,9 @@ int main(int argc, char *argv[])
         
         player.Update(delta);
 
+        // Async NPC name generation: detect nearby NPCs, batch, and generate.
+        npcSystem.UpdateNameGeneration(player.GetPosition(), delta);
+
         // Deferred passes must not blend into the G-buffer.
         glDisable(GL_BLEND);
 
@@ -544,6 +567,9 @@ int main(int argc, char *argv[])
         glm::vec3 cameraFront = player.GetFront();
         glm::vec3 cameraUp = player.GetUp();
         glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+
+        // Build frustum for culling.
+        Frustum frustum(proj * view);
 
         // Update terrain generation around camera
         UpdateTerrain(cameraPos);
@@ -562,8 +588,8 @@ int main(int argc, char *argv[])
 
             // Render scene geometry directly with an unlit shader.
             const GLuint wf = wireframeProgram ? wireframeProgram : DeferredRenderer::GetGeometryShader();
-            RenderTerrainToGBuffer(wf, proj, view);
-            npcSystem.RenderToGBuffer(wf, proj, view);
+            RenderTerrainToGBuffer(wf, proj, view, frustum);
+            npcSystem.RenderToGBuffer(wf, proj, view, frustum);
         } else {
             // Restore default clear color; skybox will cover anyway.
             glClearColor(0.1f, 0.1f, 0.12f, 1.0f);
@@ -579,8 +605,8 @@ int main(int argc, char *argv[])
             DeferredRenderer::BeginGeometryPass();
 
             // Render world geometry to G-buffer
-            RenderTerrainToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view);
-            npcSystem.RenderToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view);
+            RenderTerrainToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view, frustum);
+            npcSystem.RenderToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view, frustum);
 
             DeferredRenderer::EndGeometryPass();
 

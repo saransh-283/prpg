@@ -42,7 +42,10 @@ static bool load_state(const std::string& model_path,
     // initialize the context
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = n_ctx;
-    ctx_params.n_batch = n_ctx;
+    ctx_params.n_batch = Config::LLM::BATCH_SIZE;
+    ctx_params.n_ubatch = Config::LLM::MICRO_BATCH_SIZE;
+    ctx_params.n_threads = Config::LLM::CPU_THREADS;
+    ctx_params.n_threads_batch = Config::LLM::BATCH_THREADS;
 
     out_ctx = llama_init_from_model(out_model, ctx_params);
     if (!out_ctx) {

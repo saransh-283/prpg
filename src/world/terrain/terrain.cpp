@@ -1,5 +1,6 @@
 #include "terrain.h"
 #include <core/config.h>
+#include <utils/frustum/frustum.h>
 #include <vector>
 #include <unordered_map>
 #include <cmath>
@@ -89,6 +90,9 @@ struct Chunk {
     // Terrain vertices for filtering
     std::vector<float> terrainVertices;
     std::vector<unsigned int> terrainIndices;
+
+    // Axis-aligned bounding box enclosing all geometry in this chunk.
+    AABB aabb;
 };
 
 static std::unordered_map<long long, Chunk> g_chunks;
@@ -533,6 +537,35 @@ static void createChunkMesh(Chunk& c) {
     }
 }
 
+// Compute an AABB that encloses all geometry in the chunk (terrain + buildings).
+static void computeChunkAABB(Chunk& c) {
+    const float chunkWorld = (g_chunkSize - 1) * g_scale;
+    c.aabb.min.x = c.cx * chunkWorld;
+    c.aabb.min.z = c.cz * chunkWorld;
+    c.aabb.max.x = c.aabb.min.x + chunkWorld;
+    c.aabb.max.z = c.aabb.min.z + chunkWorld;
+
+    // Y range from terrain vertices.
+    float yMin =  1e30f;
+    float yMax = -1e30f;
+    for (size_t i = 1; i < c.terrainVertices.size(); i += 3) {
+        float y = c.terrainVertices[i];
+        if (y < yMin) yMin = y;
+        if (y > yMax) yMax = y;
+    }
+
+    // Extend upward by the tallest building in the chunk.
+    float maxBuildingH = 0.0f;
+    for (const auto& b : c.buildings) {
+        if (b.height > maxBuildingH) maxBuildingH = b.height;
+    }
+    yMax += maxBuildingH;
+
+    // Small safety margin.
+    c.aabb.min.y = yMin - 1.0f;
+    c.aabb.max.y = yMax + 1.0f;
+}
+
 // Public API: generate terrain chunk with complete pipeline
 bool GenerateTerrainChunk(int cx, int cz) {
     long long k = keyFor(cx, cz);
@@ -540,6 +573,7 @@ bool GenerateTerrainChunk(int cx, int cz) {
     Chunk c;
     c.cx = cx; c.cz = cz;
     createChunkMesh(c);
+    computeChunkAABB(c);
     g_chunks[k] = c;
     return true;
 }
@@ -1030,6 +1064,7 @@ static void ProcessReadyChunks(int currentCx, int currentCz) {
             c.buildingPolygonMeshes.push_back(blueprintMesh);
         }
 
+        computeChunkAABB(c);
         g_chunks[k] = std::move(c);
         ++uploaded;
     }
@@ -1144,7 +1179,7 @@ void CleanupTerrain() {
 }
 
 // Render terrain to G-buffer for deferred rendering
-void RenderTerrainToGBuffer(GLuint geometryShader, const glm::mat4& proj, const glm::mat4& view) {
+void RenderTerrainToGBuffer(GLuint geometryShader, const glm::mat4& proj, const glm::mat4& view, const Frustum& frustum) {
     if (geometryShader == 0) return;
 
     glUseProgram(geometryShader);
@@ -1159,6 +1194,10 @@ void RenderTerrainToGBuffer(GLuint geometryShader, const glm::mat4& proj, const 
 
     for (auto& kv : g_chunks) {
         Chunk& c = kv.second;
+
+        // ── Chunk-level frustum cull ──
+        if (!frustum.TestAABB(c.aabb)) continue;
+
         glm::mat4 model = glm::mat4(1.0f);
         glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
 

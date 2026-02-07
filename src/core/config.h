@@ -200,11 +200,20 @@ namespace Building {
 // LLM (Language Model) Parameters
 // ============================================================================
 namespace LLM {
-    constexpr int DEFAULT_GPU_LAYERS = 16;   // Number of model layers to offload to GPU (-1 = auto/all)
-    constexpr int DEFAULT_CONTEXT_SIZE = 4096; // Context window size in tokens
-    constexpr float MIN_P = 0.05f;           // Minimum probability threshold for token sampling
-    constexpr float TEMPERATURE = 0.8f;      // Sampling temperature (higher = more random, lower = more deterministic)
-    constexpr unsigned int DEFAULT_SEED = 0; // Default RNG seed for sampling (0 = random)
+    constexpr int DEFAULT_GPU_LAYERS = 16;      // Number of model layers to offload to GPU (-1 = auto/all)
+    constexpr int DEFAULT_CONTEXT_SIZE = 8192;  // Context window size in tokens
+    constexpr int BATCH_SIZE = 8192;            // Prompt batch size (tokens processed per batch)
+    constexpr int MICRO_BATCH_SIZE = 512;       // Micro-batch size for prompt processing
+    constexpr int CPU_THREADS = 16;             // Number of CPU threads for generation
+    constexpr int BATCH_THREADS = 16;           // Number of CPU threads for batch processing
+    constexpr float MIN_P = 0.05f;              // Minimum probability threshold for token sampling
+    constexpr float TEMPERATURE = 0.8f;         // Sampling temperature (higher = more random, lower = more deterministic)
+    constexpr unsigned int DEFAULT_SEED = 0;    // Default RNG seed for sampling (0 = random)
+
+    // NPC name generation via LLM
+    constexpr float NPC_NAME_RADIUS = 20.0f;        // Radius in world units to detect nearby NPCs (~5 sec walk)
+    constexpr float NPC_NAME_BATCH_WINDOW = 2.0f;   // Seconds to collect NPCs before generating names
+    constexpr int   NPC_NAME_HISTORY_SIZE = 15;      // Number of recent names kept to avoid duplicates
 }
 
 // ============================================================================
