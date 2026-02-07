@@ -1,6 +1,7 @@
 #include "terrain.h"
 #include <core/config.h>
 #include <utils/frustum/frustum.h>
+#include <utils/occlusion/occlusion_culler.h>
 #include <vector>
 #include <unordered_map>
 #include <cmath>
@@ -98,6 +99,9 @@ struct Chunk {
 static std::unordered_map<long long, Chunk> g_chunks;
 static noise::module::Perlin g_perlin;
 static int g_chunkSize = Config::World::CHUNK_SIZE; // vertices per side
+
+// Hardware occlusion culler – skips fully-hidden chunks using previous-frame query results.
+static OcclusionCuller g_occlusionCuller;
 static float g_scale = Config::World::VERTEX_SPACING; // spacing between vertices (larger to make terrain more planar)
 static int g_viewRadius = Config::World::VIEW_RADIUS; // generate chunks within this radius
 // terrain height scaling to reduce steepness
@@ -154,6 +158,7 @@ long long keyFor(int cx, int cz) {
 bool InitTerrain() {
     g_perlin.SetSeed(Config::World::PERLIN_SEED);
     g_perlin.SetFrequency(g_heightFrequency);
+    g_occlusionCuller.InitProxyMesh();
     StartChunkWorker();
     return true;
 }
@@ -1172,72 +1177,134 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
 
 void CleanupTerrain() {
     StopChunkWorker();
+    g_occlusionCuller.Cleanup();
     for (auto& kv : g_chunks) {
         destroyChunk(kv.second);
     }
     g_chunks.clear();
 }
 
+// Helper: compute squared distance from camera to chunk AABB center.
+static float ChunkDistSq(const Chunk& c, const glm::vec3& cam) {
+    const glm::vec3 center = (c.aabb.min + c.aabb.max) * 0.5f;
+    const glm::vec3 d = center - cam;
+    return glm::dot(d, d);
+}
+
+// Render a single chunk's full geometry (terrain + roads + buildings etc.).
+static void DrawChunkGeometry(const Chunk& c, GLint modelLoc, GLint colorLoc) {
+    glm::mat4 model = glm::mat4(1.0f);
+    glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
+
+    if (c.VAO != 0 && c.indexCount > 0) {
+        glUniform3f(colorLoc, Config::Terrain::COLOR_R / 255.0f, Config::Terrain::COLOR_G / 255.0f, Config::Terrain::COLOR_B / 255.0f);
+        glBindVertexArray(c.VAO);
+        glDrawElements(GL_TRIANGLES, c.indexCount, GL_UNSIGNED_INT, 0);
+    }
+    if (c.highwayVAO != 0 && c.highwayIndexCount > 0) {
+        glUniform3f(colorLoc, Config::Highway::COLOR_R / 255.0f, Config::Highway::COLOR_G / 255.0f, Config::Highway::COLOR_B / 255.0f);
+        glBindVertexArray(c.highwayVAO);
+        glDrawElements(GL_TRIANGLES, c.highwayIndexCount, GL_UNSIGNED_INT, 0);
+    }
+    if (c.roadVAO != 0 && c.roadIndexCount > 0) {
+        glUniform3f(colorLoc, Config::Road::COLOR_R / 255.0f, Config::Road::COLOR_G / 255.0f, Config::Road::COLOR_B / 255.0f);
+        glBindVertexArray(c.roadVAO);
+        glDrawElements(GL_TRIANGLES, c.roadIndexCount, GL_UNSIGNED_INT, 0);
+    }
+    if (c.streetVAO != 0 && c.streetIndexCount > 0) {
+        glUniform3f(colorLoc, Config::Street::COLOR_R / 255.0f, Config::Street::COLOR_G / 255.0f, Config::Street::COLOR_B / 255.0f);
+        glBindVertexArray(c.streetVAO);
+        glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
+    }
+    if (c.buildingVAO != 0 && c.buildingIndexCount > 0) {
+        glUniform3f(colorLoc, Config::Building::COLOR_R / 255.0f, Config::Building::COLOR_G / 255.0f, Config::Building::COLOR_B / 255.0f);
+        glBindVertexArray(c.buildingVAO);
+        glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
+    }
+}
+
 // Render terrain to G-buffer for deferred rendering
 void RenderTerrainToGBuffer(GLuint geometryShader, const glm::mat4& proj, const glm::mat4& view, const Frustum& frustum) {
     if (geometryShader == 0) return;
 
+    // ── Collect previous-frame occlusion query results ──
+    if (Config::Rendering::Culling::OCCLUSION_ENABLED) {
+        g_occlusionCuller.BeginFrame();
+    }
+
     glUseProgram(geometryShader);
-    
+
     GLint modelLoc = glGetUniformLocation(geometryShader, "model");
-    GLint viewLoc = glGetUniformLocation(geometryShader, "view");
-    GLint projLoc = glGetUniformLocation(geometryShader, "projection");
+    GLint viewLoc  = glGetUniformLocation(geometryShader, "view");
+    GLint projLoc  = glGetUniformLocation(geometryShader, "projection");
     GLint colorLoc = glGetUniformLocation(geometryShader, "uColor");
-    
+
     glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
     glUniformMatrix4fv(projLoc, 1, GL_FALSE, glm::value_ptr(proj));
 
+    // ── Extract camera world-space position from the view matrix ──
+    const glm::mat4 invView = glm::inverse(view);
+    const glm::vec3 cameraPos(invView[3]);
+
+    // Determine camera chunk coordinates for nearby-chunk exemption.
+    int camCx, camCz;
+    WorldToChunk(cameraPos.x, cameraPos.z, camCx, camCz);
+
+    // ── Build a frustum-visible list and sort front-to-back ──
+    // Front-to-back order is essential: closer chunks populate the depth
+    // buffer first so farther chunks' occlusion queries are accurate.
+    struct ChunkRef {
+        long long key;
+        Chunk*    chunk;
+        float     distSq;
+        bool      nearby; // exempt from occlusion culling
+    };
+    std::vector<ChunkRef> visible;
+    visible.reserve(g_chunks.size());
+
     for (auto& kv : g_chunks) {
         Chunk& c = kv.second;
-
-        // ── Chunk-level frustum cull ──
         if (!frustum.TestAABB(c.aabb)) continue;
 
-        glm::mat4 model = glm::mat4(1.0f);
-        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
+        const bool nearby = (std::abs(c.cx - camCx) <= 1 && std::abs(c.cz - camCz) <= 1);
+        visible.push_back({ kv.first, &c, ChunkDistSq(c, cameraPos), nearby });
+    }
 
-        // Render terrain
-        if (c.VAO != 0 && c.indexCount > 0) {
-            glUniform3f(colorLoc, Config::Terrain::COLOR_R / 255.0f, Config::Terrain::COLOR_G / 255.0f, Config::Terrain::COLOR_B / 255.0f);
-            glBindVertexArray(c.VAO);
-            glDrawElements(GL_TRIANGLES, c.indexCount, GL_UNSIGNED_INT, 0);
+    std::sort(visible.begin(), visible.end(),
+              [](const ChunkRef& a, const ChunkRef& b) { return a.distSq < b.distSq; });
+
+    // ── Render pass ──
+    for (const auto& ref : visible) {
+        const Chunk& c   = *ref.chunk;
+        const long long chunkKey = ref.key;
+
+        // Nearby chunks (camera chunk + immediate neighbours) are NEVER
+        // occlusion-culled to prevent the player's surroundings from popping.
+        const bool canOcclude = Config::Rendering::Culling::OCCLUSION_ENABLED && !ref.nearby;
+
+        // ── Occlusion cull (previous-frame result) ──
+        if (canOcclude && !g_occlusionCuller.IsChunkVisible(chunkKey)) {
+            // Draw a query-only AABB proxy (no depth/colour writes) so the
+            // chunk can recover to visible when the camera moves.
+            g_occlusionCuller.BeginQuery(chunkKey);
+            g_occlusionCuller.DrawAABBProxy(c.aabb, modelLoc);
+            g_occlusionCuller.EndQuery();
+            continue;
         }
 
-        // Render highways
-        if (c.highwayVAO != 0 && c.highwayIndexCount > 0) {
-            glUniform3f(colorLoc, Config::Highway::COLOR_R / 255.0f, Config::Highway::COLOR_G / 255.0f, Config::Highway::COLOR_B / 255.0f);
-            glBindVertexArray(c.highwayVAO);
-            glDrawElements(GL_TRIANGLES, c.highwayIndexCount, GL_UNSIGNED_INT, 0);
-        }
+        // ── Render full chunk geometry (inside a query when enabled) ──
+        if (canOcclude) g_occlusionCuller.BeginQuery(chunkKey);
 
-        // Render roads
-        if (c.roadVAO != 0 && c.roadIndexCount > 0) {
-            glUniform3f(colorLoc, Config::Road::COLOR_R / 255.0f, Config::Road::COLOR_G / 255.0f, Config::Road::COLOR_B / 255.0f);
-            glBindVertexArray(c.roadVAO);
-            glDrawElements(GL_TRIANGLES, c.roadIndexCount, GL_UNSIGNED_INT, 0);
-        }
+        DrawChunkGeometry(c, modelLoc, colorLoc);
 
-        // Render streets
-        if (c.streetVAO != 0 && c.streetIndexCount > 0) {
-            glUniform3f(colorLoc, Config::Street::COLOR_R / 255.0f, Config::Street::COLOR_G / 255.0f, Config::Street::COLOR_B / 255.0f);
-            glBindVertexArray(c.streetVAO);
-            glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
-        }
-        
-        // Render buildings
-        if (c.buildingVAO != 0 && c.buildingIndexCount > 0) {
-            glUniform3f(colorLoc, Config::Building::COLOR_R / 255.0f, Config::Building::COLOR_G / 255.0f, Config::Building::COLOR_B / 255.0f);
-            glBindVertexArray(c.buildingVAO);
-            glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
-        }
+        if (canOcclude) g_occlusionCuller.EndQuery();
     }
 
     glBindVertexArray(0);
+
+    if (Config::Rendering::Culling::OCCLUSION_ENABLED) {
+        g_occlusionCuller.EndFrame();
+    }
 }
 
 // Render terrain to shadow map

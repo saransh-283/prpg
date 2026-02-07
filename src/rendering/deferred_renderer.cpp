@@ -261,6 +261,13 @@ namespace DeferredRenderer {
         const GLfloat clearDepth = 1.0f;
         glClearBufferfv(GL_DEPTH, 0, &clearDepth);
         glEnable(GL_DEPTH_TEST);
+
+        // ── Backface culling ──
+        // Not using GL_CULL_FACE here because building/road meshes have
+        // inconsistent winding order.  Instead the fragment shader discards
+        // back-facing fragments using screen-space derivative normals,
+        // which is winding-order independent.  The depth test also naturally
+        // prevents back faces from showing on solid convex geometry.
     }
 
     void EndGeometryPass() {

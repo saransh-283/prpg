@@ -285,6 +285,18 @@ namespace Rendering {
     namespace Skybox {
         constexpr float TIME_OF_DAY = 0.5f;     // Time of day (0.0 = midnight, 0.5 = noon, 1.0 = midnight)
     }
+
+    // Culling
+    namespace Culling {
+        // Backface culling discards triangles whose back face is toward the camera.
+        // Halves fragment work for closed geometry with consistent winding.
+        constexpr bool BACKFACE_ENABLED = true;
+
+        // Hardware occlusion culling uses previous-frame GPU queries to skip
+        // chunks that are completely hidden behind closer geometry (e.g. large
+        // buildings blocking an entire chunk behind them).
+        constexpr bool OCCLUSION_ENABLED = true;
+    }
 }
 
 // ============================================================================
