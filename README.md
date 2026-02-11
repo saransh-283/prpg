@@ -1,3 +1,5 @@
+![PRPG Banner](screenshots/banner.png)
+
 # PRPG
 
 PRPG (Procedural RPG) is a small C++ project demonstrating procedural generation, rendering, and lightweight LLM integration for in-game behaviors. It's intended as a prototype and research playground for procedural world generation, NPC behaviors, and integration with local model runtimes.
