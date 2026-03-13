@@ -58,7 +58,14 @@ void InterruptLLMIfGenerating() {
 int main(int argc, char *argv[])
 {
     (void)argc;
-    (void)argv;
+    // Accept model path from argv[1] or prompt the user at startup
+    std::string userModelPath;
+    if (argc > 1) {
+        userModelPath = argv[1];
+    } else {
+        std::cout << "Enter LLM model path (leave empty to use default): ";
+        std::getline(std::cin, userModelPath);
+    }
     std::cout << "Procgen (minimal) - text overlay demo" << std::endl;
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
@@ -122,6 +129,27 @@ int main(int argc, char *argv[])
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     // Enable depth testing for 3D rendering
     glEnable(GL_DEPTH_TEST);
+
+    // Kick off LLM model loading in the background early so it loads concurrently
+    // with terrain and asset loading. Uses `userModelPath` (argv[1] or prompt).
+    {
+        namespace fs = std::filesystem;
+
+        std::string modelPath = userModelPath.empty() ? Resources::Models::LLM_DEFAULT_MODEL : userModelPath;
+        const std::string fallbackPath = "src/models/Meta-Llama-3-8B-Instruct.Q5_K_M.gguf";
+
+        if (!fs::exists(modelPath) && fs::exists(fallbackPath)) {
+            modelPath = fallbackPath;
+        }
+
+        if (fs::exists(modelPath)) {
+            std::cout << "[LLM] Starting background load: " << modelPath << std::endl;
+            (void)start_llm_background_load(modelPath, Config::LLM::DEFAULT_GPU_LAYERS, Config::LLM::DEFAULT_CONTEXT_SIZE);
+        } else {
+            std::cout << "[LLM] Model not found; skipping background load (tried: "
+                      << Resources::Models::LLM_DEFAULT_MODEL << ", " << fallbackPath << ")" << std::endl;
+        }
+    }
 
     // Handle Ctrl+C / SIGTERM as a clean exit (best-effort).
     std::signal(SIGINT, HandleTerminateSignal);
@@ -321,26 +349,7 @@ int main(int argc, char *argv[])
         SDL_Delay(10);
     }
 
-    // Kick off LLM model loading in the background after the loading screen.
-    // This avoids blocking startup/gameplay on a heavy GGUF load.
-    {
-        namespace fs = std::filesystem;
-
-        std::string modelPath = Resources::Models::LLM_DEFAULT_MODEL;
-        const std::string fallbackPath = "src/models/Meta-Llama-3-8B-Instruct.Q5_K_M.gguf";
-
-        if (!fs::exists(modelPath) && fs::exists(fallbackPath)) {
-            modelPath = fallbackPath;
-        }
-
-        if (fs::exists(modelPath)) {
-            std::cout << "[LLM] Starting background load: " << modelPath << std::endl;
-            (void)start_llm_background_load(modelPath, Config::LLM::DEFAULT_GPU_LAYERS, Config::LLM::DEFAULT_CONTEXT_SIZE);
-        } else {
-            std::cout << "[LLM] Model not found; skipping background load (tried: "
-                      << Resources::Models::LLM_DEFAULT_MODEL << ", " << fallbackPath << ")" << std::endl;
-        }
-    }
+    
 
     // Try loading shader programs
     if (!program3D && !LoadShaderProgram(Resources::Shaders::Simple3D::VERTEX, Resources::Shaders::Simple3D::FRAGMENT, program3D))
