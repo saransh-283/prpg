@@ -1,6 +1,6 @@
 #include "npc.h"
 
-#include <core/config.h>
+
 #include <core/resources.h>
 #include <core/prompts.h>
 #include <world/terrain/terrain.h>
@@ -13,6 +13,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <core/params/params.h>
 #include <random>
 #include <sstream>
 
@@ -21,17 +22,7 @@
 #include <utils/llm/init/init.h>
 
 #include <algorithm>
-#include <limits>
-
 using nlohmann::json;
-
-namespace {
-std::string ReadWholeFile(const char* path) {
-    std::ifstream in(path);
-    if (!in.is_open()) return {};
-    std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    return contents;
-}
 
 glm::vec3 Rgb255To01(const glm::vec3& rgb255) {
     return glm::vec3(rgb255.x / 255.0f, rgb255.y / 255.0f, rgb255.z / 255.0f);
@@ -83,7 +74,6 @@ float ComputeTransformedMaxY(const glm::mat4& localTransform, const glm::vec3& a
         maxY = std::max(maxY, p.y);
     }
     return std::isfinite(maxY) ? maxY : 0.0f;
-}
 }
 
 NpcSystem::NpcSystem() : meshLoaded(false) {}
@@ -154,14 +144,9 @@ bool NpcSystem::LoadParams() {
     heightScaleMin = heightScaleMax = 1.0f;
     widthScaleMin = widthScaleMax = 1.0f;
 
-    const std::string text = ReadWholeFile(Resources::Entities::NPC_PARAMS);
-    if (text.empty()) return false;
-
-    json j;
-    try {
-        j = json::parse(text);
-    } catch (const std::exception& e) {
-        std::cerr << "NPC params JSON parse failed: " << e.what() << std::endl;
+    // Load NPC params via core params accessor.
+    json j = CoreParams::GetNpcParams();
+    if (j.is_null()) {
         return false;
     }
 
@@ -200,7 +185,8 @@ void NpcSystem::GenerateDeterministicSpawns(const glm::vec3& spawnCenter) {
     // Base hover height above terrain; a small per-NPC offset is added deterministically.
     constexpr float kHeightOffset = 0.28f;
 
-    const uint32_t seedA = (uint32_t)Config::World::PERLIN_SEED;
+    const auto& world = CoreParams::GetWorldParams();
+    const uint32_t seedA = (uint32_t)world.value("perlin_seed", 1337);
     const uint32_t seedB = QuantizeSeedComponent(spawnCenter.x);
     const uint32_t seedC = QuantizeSeedComponent(spawnCenter.z);
     const uint32_t seedD = 0x4E504300u; // 'NPC\0'
@@ -333,13 +319,17 @@ void NpcSystem::GenerateDeterministicSpawns(const glm::vec3& spawnCenter) {
 void NpcSystem::GenerateDeterministicSpawnsForChunk(int cx, int cz) {
     if (palette01.empty()) return;
 
+    const auto& world = CoreParams::GetWorldParams();
+
     // Chunk world-space bounds match terrain generation: (chunkSize-1) * vertexSpacing.
-    const float chunkWorldSize = (float)(Config::World::CHUNK_SIZE - 1) * Config::World::VERTEX_SPACING;
+    const int chunkSize = world.value("chunk_size", 128);
+    const float vertexSpacing = world.value("vertex_spacing", 0.5f);
+    const float chunkWorldSize = (float)(chunkSize - 1) * vertexSpacing;
     const float originX = (float)cx * chunkWorldSize;
     const float originZ = (float)cz * chunkWorldSize;
 
     // Keep some padding from the edges.
-    const float pad = 2.0f * Config::World::VERTEX_SPACING;
+    const float pad = 2.0f * vertexSpacing;
     const float minX = originX + pad;
     const float maxX = originX + chunkWorldSize - pad;
     const float minZ = originZ + pad;
@@ -347,7 +337,7 @@ void NpcSystem::GenerateDeterministicSpawnsForChunk(int cx, int cz) {
     if (!(maxX > minX && maxZ > minZ)) return;
 
     // Deterministic seed per chunk.
-    const uint32_t seedA = (uint32_t)Config::World::PERLIN_SEED;
+    const uint32_t seedA = (uint32_t)world.value("perlin_seed", 1337);
     const uint32_t seedB = (uint32_t)(cx ^ (cx >> 16));
     const uint32_t seedC = (uint32_t)(cz ^ (cz >> 16));
     const uint32_t seedD = 0x4E504343u; // 'NPCC'
@@ -554,7 +544,8 @@ bool NpcSystem::CollidesXZ(float x, float z, float radius) const {
 void NpcSystem::UpdateNameGeneration(const glm::vec3& playerPos, float deltaTime) {
     if (!meshLoaded) return;
 
-    const float radiusSq = Config::LLM::NPC_NAME_RADIUS * Config::LLM::NPC_NAME_RADIUS;
+    const auto& llmParams = CoreParams::GetLLMParams();
+    const float radiusSq = llmParams.value("npc_name_radius", 20.0f) * llmParams.value("npc_name_radius", 20.0f);
 
     // ── 1. Detect unnamed NPCs within radius ────────────────────────────
     {
@@ -591,7 +582,7 @@ void NpcSystem::UpdateNameGeneration(const glm::vec3& playerPos, float deltaTime
     }
 
     // ── 3. Fire when the window closes ──────────────────────────────────
-    if (batchWindowOpen && batchTimer >= Config::LLM::NPC_NAME_BATCH_WINDOW) {
+    if (batchWindowOpen && batchTimer >= CoreParams::GetLLMParams().value("npc_name_batch_window", 2.0f)) {
         std::lock_guard<std::mutex> lock(nameMutex);
 
         batchWindowOpen = false;
@@ -774,7 +765,7 @@ void NpcSystem::StartNameGeneration(std::vector<int> ids) {
 
                 // Update recent names ring-buffer.
                 recentNames.push_back(assignedName);
-                if ((int)recentNames.size() > Config::LLM::NPC_NAME_HISTORY_SIZE) {
+                if ((int)recentNames.size() > CoreParams::GetLLMParams().value("npc_name_history_size", 15)) {
                     recentNames.pop_front();
                 }
                 recentSet.insert(toLower(assignedName));

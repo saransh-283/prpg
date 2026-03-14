@@ -1,5 +1,5 @@
 #include "buildings.h"
-#include <core/config.h>
+#include <core/params/params.h>
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
@@ -206,6 +206,7 @@ std::vector<BuildingShape> generate_buildings_grid(std::vector<std::vector<int>>
                                                     int padding,
                                                     float density,
                                                     int seed) {
+    const auto& building = CoreParams::GetBuildingParams();
     std::vector<BuildingShape> buildings;
     
     int grid_height = grid.size();
@@ -246,20 +247,20 @@ std::vector<BuildingShape> generate_buildings_grid(std::vector<std::vector<int>>
         float min_height, max_height;
         
         if (road_type == 1) {  // Highway
-            min_size = Config::Building::HIGHWAY_MIN_SIZE;
-            max_size = Config::Building::HIGHWAY_MAX_SIZE;
-            min_height = Config::Building::HIGHWAY_MIN_HEIGHT;
-            max_height = Config::Building::HIGHWAY_MAX_HEIGHT;
+            min_size = static_cast<int>(building.value("highway_min_size", 15));
+            max_size = static_cast<int>(building.value("highway_max_size", 30));
+            min_height = static_cast<float>(building.value("highway_min_height", 20.0));
+            max_height = static_cast<float>(building.value("highway_max_height", 50.0));
         } else if (road_type == 2) {  // Road
-            min_size = Config::Building::ROAD_MIN_SIZE;
-            max_size = Config::Building::ROAD_MAX_SIZE;
-            min_height = Config::Building::ROAD_MIN_HEIGHT;
-            max_height = Config::Building::ROAD_MAX_HEIGHT;
+            min_size = static_cast<int>(building.value("road_min_size", 10));
+            max_size = static_cast<int>(building.value("road_max_size", 20));
+            min_height = static_cast<float>(building.value("road_min_height", 10.0));
+            max_height = static_cast<float>(building.value("road_max_height", 30.0));
         } else {  // Street
-            min_size = Config::Building::STREET_MIN_SIZE;
-            max_size = Config::Building::STREET_MAX_SIZE;
-            min_height = Config::Building::STREET_MIN_HEIGHT;
-            max_height = Config::Building::STREET_MAX_HEIGHT;
+            min_size = static_cast<int>(building.value("street_min_size", 6));
+            max_size = static_cast<int>(building.value("street_max_size", 12));
+            min_height = static_cast<float>(building.value("street_min_height", 5.0));
+            max_height = static_cast<float>(building.value("street_max_height", 15.0));
         }
         
         // Generate building dimensions
@@ -288,9 +289,9 @@ std::vector<BuildingShape> generate_buildings_grid(std::vector<std::vector<int>>
         double shape_hash = deterministic_unit(seed + 6000, chunk_x * 1000 + chunk_y, i);
         
         std::vector<glm::vec2> building_shape;
-        if (shape_hash < Config::Building::RECTANGLE_PROBABILITY) {
+        if (shape_hash < static_cast<double>(building.value("rectangle_probability", 0.4))) {
             building_shape = generate_rectangle_shape(building_width, building_height);
-        } else if (shape_hash < Config::Building::L_SHAPE_PROBABILITY) {
+        } else if (shape_hash < static_cast<double>(building.value("l_shape_probability", 0.7))) {
             building_shape = generate_l_shape(building_width, building_height, seed + i);
         } else {
             building_shape = generate_t_shape(building_width, building_height, seed + i);

@@ -1,5 +1,5 @@
 #include "map.h"
-#include <core/config.h>
+#include <core/params/params.h>
 #include <core/resources.h>
 
 #include <array>
@@ -13,6 +13,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <world/terrain/terrain.h>
+#include <core/params/params.h>
 
 #include <stb_image.h>
 
@@ -22,7 +23,7 @@ static GLuint g_borderVAO = 0;
 static GLuint g_borderVBO = 0;
 static bool g_mapVisible = false;
 static glm::vec2 g_mapOffset(0.0f, 0.0f);
-static float g_mapZoom = Config::UI::Map::ZOOM_DEFAULT;
+static float g_mapZoom = 1.0f;
 static GLuint g_markerSdfTex = 0;
 static int g_markerSdfW = 0;
 static int g_markerSdfH = 0;
@@ -118,6 +119,11 @@ bool InitMap() {
         // Non-fatal: marker will simply not render.
         // (Avoid logging spam here; InitMap is called once.)
     }
+    // Initialize map zoom from params (fall back to compile-time config)
+    {
+        const json& uj = CoreParams::GetUiMapParams();
+        g_mapZoom = uj.value("zoom_default", static_cast<float>(1.0f));
+    }
     
     return true;
 }
@@ -140,8 +146,11 @@ void UpdateMapOffset(const glm::vec2& delta) {
 
 void ZoomMap(float delta) {
     g_mapZoom += delta;
-    if (g_mapZoom < Config::UI::Map::ZOOM_MIN) g_mapZoom = Config::UI::Map::ZOOM_MIN;
-    if (g_mapZoom > Config::UI::Map::ZOOM_MAX) g_mapZoom = Config::UI::Map::ZOOM_MAX;
+    const json& uj = CoreParams::GetUiMapParams();
+    const float zmin = uj.value("zoom_min", static_cast<float>(0.5f));
+    const float zmax = uj.value("zoom_max", static_cast<float>(5.0f));
+    if (g_mapZoom < zmin) g_mapZoom = zmin;
+    if (g_mapZoom > zmax) g_mapZoom = zmax;
 }
 
 float GetMapZoom() {
@@ -168,22 +177,24 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
     int miniX, miniY, miniW, miniH;
     float worldRadius;
     
+    const json& uj = CoreParams::GetUiMapParams();
     if (showFullMap) {
         // Full screen map mode
         miniX = 0;
         miniY = 0;
         miniW = windowW;
         miniH = windowH;
-        worldRadius = (Config::UI::Map::WORLD_RADIUS * Config::UI::Map::MAP_WORLD_RADIUS_MULTIPLIER) / g_mapZoom;
+        worldRadius = (uj.value("world_radius", static_cast<float>(40.0f)) *
+                   uj.value("map_world_radius_multiplier", static_cast<float>(3.0f))) / g_mapZoom;
     } else {
         // Small map in corner
-        const int defaultSize = Config::UI::Map::SIZE;
-        const int margin = Config::UI::Map::MARGIN;
+        const int defaultSize = uj.value("size", static_cast<int>(220));
+        const int margin = uj.value("margin", static_cast<int>(10));
         miniX = windowW - defaultSize - margin;
         miniY = windowH - defaultSize - margin;
         miniW = defaultSize;
         miniH = defaultSize;
-        worldRadius = Config::UI::Map::WORLD_RADIUS / g_mapZoom; // Apply zoom to minimap too
+        worldRadius = uj.value("world_radius", static_cast<float>(40.0f)) / g_mapZoom; // Apply zoom to minimap too
     }
 
     glEnable(GL_SCISSOR_TEST);
@@ -203,7 +214,7 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
     float worldRadiusY = worldRadius;
     
     glm::mat4 projMini = glm::ortho(-worldRadiusX, worldRadiusX, -worldRadiusY, worldRadiusY, -1000.0f, 1000.0f);
-    glm::vec3 eye(cx, Config::UI::Map::CAMERA_HEIGHT, cz);
+    glm::vec3 eye(cx, uj.value("camera_height", static_cast<float>(200.0f)), cz);
     glm::vec3 center(cx, 0.0f, cz);
     glm::vec3 up(0.0f, 0.0f, -1.0f);
     glm::mat4 viewMini = glm::lookAt(eye, center, up);
@@ -231,6 +242,10 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
         out.push_back(x1); out.push_back(y); out.push_back(z1);
     };
 
+    const json& wj = CoreParams::GetWorldParams();
+    const float spacing = wj.value("vertex_spacing", static_cast<float>(0.5f));
+    const int chunkCfgSize = wj.value("chunk_size", static_cast<int>(128));
+
     auto buildChunkCache = [&](int chunkCx, int chunkCz) -> bool {
         const std::vector<std::vector<int>>* gridPtr = nullptr;
         if (!GetChunkRoadGrid(chunkCx, chunkCz, gridPtr) || !gridPtr) return false;
@@ -246,9 +261,8 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
         std::vector<float> vStreet;
         std::vector<float> vBuilding;
 
-        const float spacing = Config::World::VERTEX_SPACING;
-        const float chunkOriginX = (static_cast<float>(chunkCx) * static_cast<float>(Config::World::CHUNK_SIZE - 1)) * spacing;
-        const float chunkOriginZ = (static_cast<float>(chunkCz) * static_cast<float>(Config::World::CHUNK_SIZE - 1)) * spacing;
+        const float chunkOriginX = (static_cast<float>(chunkCx) * static_cast<float>(chunkCfgSize - 1)) * spacing;
+        const float chunkOriginZ = (static_cast<float>(chunkCz) * static_cast<float>(chunkCfgSize - 1)) * spacing;
 
         for (int z = 0; z < gridSizeZ - 1; ++z) {
             for (int x = 0; x < gridSizeX - 1; ++x) {
@@ -318,7 +332,7 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
     ++g_mapFrameCounter;
 
     // Determine visible chunk range (use worldRadius in Z; X uses aspect-corrected radius)
-    const float chunkWorldSize = (Config::World::CHUNK_SIZE - 1) * Config::World::VERTEX_SPACING;
+    const float chunkWorldSize = (chunkCfgSize - 1) * spacing;
     const int minChunkX = static_cast<int>(std::floor((cx - worldRadiusX) / chunkWorldSize));
     const int maxChunkX = static_cast<int>(std::ceil((cx + worldRadiusX) / chunkWorldSize));
     const int minChunkZ = static_cast<int>(std::floor((cz - worldRadiusY) / chunkWorldSize));
@@ -419,12 +433,13 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
 
     // Player marker: rounded-bottom triangle pointing in facing direction
     // Use minimap marker size if small map, full map marker size if full screen
-    float markerSizeRatio = showFullMap ? Config::UI::Map::MARKER_SIZE_MAP : Config::UI::Map::MARKER_SIZE_MINIMAP;
+    float markerSizeRatio = showFullMap ? uj.value("marker_size_map", static_cast<float>(0.02f)) :
+                                           uj.value("marker_size_minimap", static_cast<float>(0.03f));
     float markSize = worldRadius * markerSizeRatio;
     // Use original camera position for marker (not offset)
     float markerX = cameraPos.x;
     float markerZ = cameraPos.z;
-    float hy = SampleTerrainHeight(markerX, markerZ) + Config::UI::Map::MARKER_HEIGHT_OFFSET;
+    float hy = SampleTerrainHeight(markerX, markerZ) + uj.value("marker_height_offset", static_cast<float>(50.0f));
 
     // Project facing direction onto XZ plane.
     glm::vec2 f2 = SafeNormalize2(glm::vec2(cameraFront.x, cameraFront.z), glm::vec2(0.0f, 1.0f));

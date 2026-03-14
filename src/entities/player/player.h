@@ -1,6 +1,6 @@
 #pragma once
 
-#include <core/config.h>
+#include <core/params/params.h>
 #include <glm/glm.hpp>
 #include <SDL2/SDL.h>
 
@@ -55,10 +55,10 @@ private:
     // Input state
     bool mouseCaptured;
     
-    // Movement parameters
-    static constexpr float mouseSensitivity = Config::Player::MOUSE_SENSITIVITY;
-    static constexpr float moveSpeed = Config::Player::MOVE_SPEED; // units per second
-    static constexpr float gravity = Config::Player::GRAVITY;
+    // Movement parameters (runtime-configurable)
+    float mouseSensitivity;
+    float moveSpeed; // units per second
+    float gravity;
     
     // Helper methods
     void UpdateCameraFront();

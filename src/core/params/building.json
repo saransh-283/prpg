@@ -1,0 +1,23 @@
+{
+  "density": 20.0,
+  "seed": 42,
+  "padding": 8,
+  "highway_min_size": 15,
+  "highway_max_size": 30,
+  "road_min_size": 10,
+  "road_max_size": 20,
+  "street_min_size": 6,
+  "street_max_size": 12,
+  "highway_min_height": 20.0,
+  "highway_max_height": 50.0,
+  "road_min_height": 10.0,
+  "road_max_height": 30.0,
+  "street_min_height": 5.0,
+  "street_max_height": 15.0,
+  "rectangle_probability": 0.4,
+  "l_shape_probability": 0.7,
+  "t_shape_probability": 1.0,
+  "color_r": 180,
+  "color_g": 180,
+  "color_b": 180
+}

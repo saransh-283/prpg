@@ -6,8 +6,9 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include <core/config.h>
+
 #include <core/resources.h>
+#include <core/params/params.h>
 #include <objects/text/text_renderer.h>
 #include <ui/loading/loading.h>
 #include <objects/models/3d/cube/mesh.h>
@@ -78,39 +79,55 @@ int main(int argc, char *argv[])
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    // Request a depth buffer
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, Config::Window::DEPTH_BUFFER_SIZE);
-
-    const int windowW = Config::Window::WIDTH;
-    const int windowH = Config::Window::HEIGHT;
-    SDL_Window *window = SDL_CreateWindow("Procgen - Text Only",
-                                          SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                          windowW, windowH,
-                                          SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
-
-    if (!window)
+    // Request a depth buffer (from runtime params if available)
+    int windowW = CoreParams::GetWindowParams().value("width", 1200);
+    int windowH = CoreParams::GetWindowParams().value("height", 800);
+    SDL_Window* window = nullptr;
+    SDL_GLContext glContext = nullptr;
     {
-        std::cerr << "SDL_CreateWindow Error: " << SDL_GetError() << std::endl;
-        SDL_Quit();
-        return 1;
-    }
+        const auto& win = CoreParams::GetWindowParams();
+        int depth = win.value("depth_buffer_size", 24);
+        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, depth);
 
-    SDL_GLContext glContext = SDL_GL_CreateContext(window);
-    if (!glContext)
-    {
-        std::cerr << "SDL_GL_CreateContext Error: " << SDL_GetError() << std::endl;
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
+        windowW = win.value("width", 1200);
+        windowH = win.value("height", 800);
+        window = SDL_CreateWindow("Procgen - Text Only",
+                                              SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                              windowW, windowH,
+                                              SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
 
-    if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress))
-    {
-        std::cerr << "Failed to initialize GLAD" << std::endl;
-        SDL_GL_DeleteContext(glContext);
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
+        if (!window)
+        {
+            std::cerr << "SDL_CreateWindow Error: " << SDL_GetError() << std::endl;
+            SDL_Quit();
+            return 1;
+        }
+
+        glContext = SDL_GL_CreateContext(window);
+        if (!glContext)
+        {
+            std::cerr << "SDL_GL_CreateContext Error: " << SDL_GetError() << std::endl;
+            SDL_DestroyWindow(window);
+            SDL_Quit();
+            return 1;
+        }
+
+        if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress))
+        {
+            std::cerr << "Failed to initialize GLAD" << std::endl;
+            SDL_GL_DeleteContext(glContext);
+            SDL_DestroyWindow(window);
+            SDL_Quit();
+            return 1;
+        }
+
+        // Set viewport and GL state after creating context
+        glViewport(0, 0, windowW, windowH);
+        glClearColor(0.1f, 0.1f, 0.12f, 1.0f);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        // Enable depth testing for 3D rendering
+        glEnable(GL_DEPTH_TEST);
     }
 
     // Enable VSync (best-effort). Some drivers may not support it.
@@ -144,7 +161,8 @@ int main(int argc, char *argv[])
 
         if (fs::exists(modelPath)) {
             std::cout << "[LLM] Starting background load: " << modelPath << std::endl;
-            (void)start_llm_background_load(modelPath, Config::LLM::DEFAULT_GPU_LAYERS, Config::LLM::DEFAULT_CONTEXT_SIZE);
+            const auto& llmParams = CoreParams::GetLLMParams();
+            (void)start_llm_background_load(modelPath, llmParams.value("default_gpu_layers", 16), llmParams.value("default_context_size", 8192));
         } else {
             std::cout << "[LLM] Model not found; skipping background load (tried: "
                       << Resources::Models::LLM_DEFAULT_MODEL << ", " << fallbackPath << ")" << std::endl;
@@ -172,7 +190,8 @@ int main(int argc, char *argv[])
     // functions that rely on an active GL context.
     // Instead of one big InitTerrain, enqueue per-chunk tasks for finer progress.
     // Use the same view radius as the terrain module (approx 3 chunks).
-    const int initialViewRadius = Config::World::INITIAL_VIEW_RADIUS;
+    const auto& worldParams = CoreParams::GetWorldParams();
+    const int initialViewRadius = worldParams.value("initial_view_radius", 3);
     // center at 0,0 for initial generation
     int centerCx = 0;
     int centerCz = 0;
@@ -226,7 +245,7 @@ int main(int argc, char *argv[])
                 if (glm::length(candidate - glm::vec2(initialCameraPos.x, initialCameraPos.z)) > 0.1f) {
                     initialCameraPos.x = candidate.x;
                     initialCameraPos.z = candidate.y;
-                    initialCameraPos.y = SampleTerrainHeight(candidate.x, candidate.y) + Config::Player::EYE_HEIGHT;
+                    initialCameraPos.y = SampleTerrainHeight(candidate.x, candidate.y) + static_cast<float>(CoreParams::GetPlayerParams().value("eye_height", 1.6f));
                     // Skip the remaining chunk-generation tasks only; keep essential tasks (e.g., NPC init).
                     ClearLoadingTasksWithPrefix("Gen");
                 }
@@ -251,7 +270,7 @@ int main(int argc, char *argv[])
         // store the spawn into the initialCameraPos variable capture; main will use it
         initialCameraPos.x = spawn.x;
         initialCameraPos.z = spawn.y;
-        initialCameraPos.y = SampleTerrainHeight(spawn.x, spawn.y) + Config::Player::EYE_HEIGHT;
+        initialCameraPos.y = SampleTerrainHeight(spawn.x, spawn.y) + static_cast<float>(CoreParams::GetPlayerParams().value("eye_height", 1.6f));
         return true;
     }, "DetermineSpawn");
 
@@ -438,7 +457,8 @@ int main(int argc, char *argv[])
     // No external objects: terrain-only scene
 
     // Camera/projection setup
-    glm::mat4 proj = glm::perspective(glm::radians(Config::Camera::FOV), (float)windowW / (float)windowH, Config::Camera::NEAR_PLANE, Config::Camera::FAR_PLANE);
+    const auto& cam = CoreParams::GetCameraParams();
+    glm::mat4 proj = glm::perspective(glm::radians(static_cast<float>(cam.value("fov", 60.0))), (float)windowW / (float)windowH, static_cast<float>(cam.value("near_plane", 0.1)), static_cast<float>(cam.value("far_plane", 1000.0)));
     
     // Initialize player
     Player player;
@@ -469,20 +489,22 @@ int main(int argc, char *argv[])
     }
 
     // Set sun properties
+    const auto& sun = CoreParams::GetRenderingSunParams();
     DeferredRenderer::SetSunDirection(glm::vec3(
-        Config::Rendering::Sun::DIRECTION_X,
-        Config::Rendering::Sun::DIRECTION_Y,
-        Config::Rendering::Sun::DIRECTION_Z
+        static_cast<float>(sun.value("direction_x", -0.3)),
+        static_cast<float>(sun.value("direction_y", -0.7)),
+        static_cast<float>(sun.value("direction_z", -0.5))
     ));
     DeferredRenderer::SetSunColor(glm::vec3(
-        Config::Rendering::Sun::COLOR_R,
-        Config::Rendering::Sun::COLOR_G,
-        Config::Rendering::Sun::COLOR_B
+        static_cast<float>(sun.value("color_r", 1.0)),
+        static_cast<float>(sun.value("color_g", 0.95)),
+        static_cast<float>(sun.value("color_b", 0.8))
     ));
-    DeferredRenderer::SetSunIntensity(Config::Rendering::Sun::INTENSITY);
+    DeferredRenderer::SetSunIntensity(static_cast<float>(sun.value("intensity", 1.2)));
 
     // Match skybox to configured time-of-day.
-    Skybox::SetTimeOfDay(Config::Rendering::Skybox::TIME_OF_DAY);
+    const auto& sky = CoreParams::GetRenderingSkyboxParams();
+    Skybox::SetTimeOfDay(static_cast<float>(sky.value("time_of_day", 12.0)));
 
     while (running)
     {
@@ -518,12 +540,12 @@ int main(int argc, char *argv[])
                 // Zoom in with numpad + or KP_PLUS
                 if (e.key.keysym.sym == SDLK_KP_PLUS)
                 {
-                    ZoomMap(Config::UI::Map::ZOOM_STEP);
+                    ZoomMap(static_cast<float>(CoreParams::GetUiMapParams().value("zoom_step", 0.2)));
                 }
                 // Zoom out with numpad - or KP_MINUS
                 if (e.key.keysym.sym == SDLK_KP_MINUS)
                 {
-                    ZoomMap(-Config::UI::Map::ZOOM_STEP);
+                    ZoomMap(-static_cast<float>(CoreParams::GetUiMapParams().value("zoom_step", 0.2)));
                 }
                 // Toggle debug overlay with tilde/backquote key (`/~)
                 if (e.key.keysym.sym == SDLK_BACKQUOTE)
@@ -551,12 +573,13 @@ int main(int argc, char *argv[])
         const Uint8 *kb = SDL_GetKeyboardState(NULL);
         
         // Handle map scrolling when map is visible
-        if (IsMapVisible()) {
+            if (IsMapVisible()) {
             glm::vec2 scrollDelta(0.0f, 0.0f);
-            if (kb[SDL_SCANCODE_W]) scrollDelta.y -= Config::UI::Map::MAP_SCROLL_SPEED * delta;
-            if (kb[SDL_SCANCODE_S]) scrollDelta.y += Config::UI::Map::MAP_SCROLL_SPEED * delta;
-            if (kb[SDL_SCANCODE_A]) scrollDelta.x -= Config::UI::Map::MAP_SCROLL_SPEED * delta;
-            if (kb[SDL_SCANCODE_D]) scrollDelta.x += Config::UI::Map::MAP_SCROLL_SPEED * delta;
+            const float mapScroll = static_cast<float>(CoreParams::GetUiMapParams().value("map_scroll_speed", 50.0));
+            if (kb[SDL_SCANCODE_W]) scrollDelta.y -= mapScroll * delta;
+            if (kb[SDL_SCANCODE_S]) scrollDelta.y += mapScroll * delta;
+            if (kb[SDL_SCANCODE_A]) scrollDelta.x -= mapScroll * delta;
+            if (kb[SDL_SCANCODE_D]) scrollDelta.x += mapScroll * delta;
             UpdateMapOffset(scrollDelta);
         } else {
             // Normal player movement when map is not visible

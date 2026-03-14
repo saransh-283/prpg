@@ -1,5 +1,5 @@
 #include "terrain.h"
-#include <core/config.h>
+
 #include <utils/frustum/frustum.h>
 #include <utils/occlusion/occlusion_culler.h>
 #include <vector>
@@ -23,6 +23,8 @@
 #include <queue>
 #include <unordered_set>
 #include <atomic>
+
+#include <core/params/params.h>
 
 struct ChunkBlueprintInput {
     std::vector<float> polygonPoints; // [x0,z0,x1,z1,...] relative to center, world-space units
@@ -98,15 +100,15 @@ struct Chunk {
 
 static std::unordered_map<long long, Chunk> g_chunks;
 static noise::module::Perlin g_perlin;
-static int g_chunkSize = Config::World::CHUNK_SIZE; // vertices per side
+static int g_chunkSize = 128; // vertices per side
 
 // Hardware occlusion culler – skips fully-hidden chunks using previous-frame query results.
 static OcclusionCuller g_occlusionCuller;
-static float g_scale = Config::World::VERTEX_SPACING; // spacing between vertices (larger to make terrain more planar)
-static int g_viewRadius = Config::World::VIEW_RADIUS; // generate chunks within this radius
+static float g_scale = 0.5f; // spacing between vertices (larger to make terrain more planar)
+static int g_viewRadius = 3; // generate chunks within this radius
 // terrain height scaling to reduce steepness
-static float g_heightAmplitude = Config::Terrain::HEIGHT_AMPLITUDE; // lower amplitude
-static float g_heightFrequency = Config::Terrain::HEIGHT_FREQUENCY; // lower frequency for gentler slopes
+static float g_heightAmplitude = 0.6f; // lower amplitude
+static float g_heightFrequency = 0.04f; // lower frequency for gentler slopes
 
 // Async generation state (CPU work off-thread; GPU upload on main thread)
 static std::thread g_chunkWorker;
@@ -156,7 +158,16 @@ long long keyFor(int cx, int cz) {
 }
 
 bool InitTerrain() {
-    g_perlin.SetSeed(Config::World::PERLIN_SEED);
+    // Load runtime params (with fallbacks to compile-time Config::* values).
+    const auto& world = CoreParams::GetWorldParams();
+    const auto& terrain = CoreParams::GetTerrainParams();
+    g_chunkSize = world.value("chunk_size", 128);
+    g_scale = world.value("vertex_spacing", 0.5f);
+    g_viewRadius = world.value("view_radius", 3);
+    g_heightAmplitude = terrain.value("height_amplitude", 0.6f);
+    g_heightFrequency = terrain.value("height_frequency", 0.04f);
+
+    g_perlin.SetSeed(world.value("perlin_seed", 1337));
     g_perlin.SetFrequency(g_heightFrequency);
     g_occlusionCuller.InitProxyMesh();
     StartChunkWorker();
@@ -216,27 +227,32 @@ static void generateHeightmapAndGrid(Chunk& c) {
 static void generateGridBasedRoads(Chunk& c) {
     // Grid-based road generation pipeline
     int chunk_size = g_chunkSize;
-    int padding = Config::Highway::PADDING;
-    int seed = Config::Highway::SEED;
+    const auto& hwyParams = CoreParams::GetHighwayParams();
+    const auto& roadParams = CoreParams::GetRoadParams();
+    const auto& streetParams = CoreParams::GetStreetParams();
+
+    int padding = hwyParams.value("padding", 8);
+    int seed = hwyParams.value("seed", 42);
 
     // Stage 1: Generate highways (dummy for now)
-    c.roadGrid = generate_highways_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding, 
-        Config::Highway::NUM_HIGHWAYS, Config::Highway::WORM_LENGTH, Config::Highway::STEP_SIZE, 
-        Config::Highway::PERLIN_SCALE, seed, Config::Highway::GRID_ANGLES, Config::Highway::NOISE_STRENGTH);
-    
+    c.roadGrid = generate_highways_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding,
+        hwyParams.value("num_highways", 2), hwyParams.value("worm_length", 1000), hwyParams.value("step_size", 1.0f),
+        hwyParams.value("perlin_scale", 0.01f), seed, hwyParams.value("grid_angles", 36), hwyParams.value("noise_strength", 1.0f));
+
     // Stage 2: Generate roads
-    c.roadGrid = generate_roads_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding, 
-        Config::Road::NUM_ROADS, Config::Road::WORM_LENGTH, Config::Road::STEP_SIZE, 
-        Config::Road::PERLIN_SCALE, seed, Config::Road::GRID_ANGLES, Config::Road::NOISE_STRENGTH);
-    
+    c.roadGrid = generate_roads_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding,
+        roadParams.value("num_roads", 20), roadParams.value("worm_length", 800), roadParams.value("step_size", 1.0f),
+        roadParams.value("perlin_scale", 0.01f), seed, roadParams.value("grid_angles", 18), roadParams.value("noise_strength", 10.0f));
+
     // Stage 3: Generate streets
-    c.roadGrid = generate_streets_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding, 
-        Config::Street::NUM_STREETS, Config::Street::WORM_LENGTH, Config::Street::STEP_SIZE, 
-        Config::Street::PERLIN_SCALE, seed, Config::Street::GRID_ANGLES, Config::Street::NOISE_STRENGTH);
-    
+    c.roadGrid = generate_streets_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding,
+        streetParams.value("num_streets", 20), streetParams.value("worm_length", 400), streetParams.value("step_size", 1.0f),
+        streetParams.value("perlin_scale", 0.01f), seed, streetParams.value("grid_angles", 12), streetParams.value("noise_strength", 1.0f));
+
     // Stage 4: Generate buildings
+    const auto& buildingParams = CoreParams::GetBuildingParams();
     c.buildings = generate_buildings_grid(c.roadGrid, c.cx, c.cz, chunk_size, padding,
-        Config::Building::DENSITY, Config::Building::SEED);
+        buildingParams.value("density", 20.0f), buildingParams.value("seed", 42));
 }
 
 static void createMeshFromGrid(Chunk& c, int roadType, GLuint& VAO, GLuint& VBO, GLuint& EBO, int& indexCount) {
@@ -388,7 +404,7 @@ static void createBuildingMeshFromGrid(Chunk& c, GLuint& VAO, GLuint& VBO, GLuin
         float hh = heightGrid[gz][gx];
         if (hh <= 0.0f) {
             // Keep consistent with the main loop fallback.
-            hh = Config::Building::ROAD_MIN_HEIGHT;
+            hh = CoreParams::GetBuildingParams().value("road_min_height", 10.0f);
         }
         return hh;
     };
@@ -607,7 +623,7 @@ glm::vec2 DetermineSpawnPoint(float x, float z, int search_radius_chunks) {
     float bestDist2 = std::numeric_limits<float>::infinity();
     glm::vec2 bestPoint(x, z);
     int bestScore = 0;
-    const float intersectionRadius = Config::Road::INTERSECTION_RADIUS;
+    const float intersectionRadius = CoreParams::GetRoadParams().value("intersection_radius", 4.0f);
 
     for (int dz = -search_radius_chunks; dz <= search_radius_chunks; ++dz) {
         for (int dx = -search_radius_chunks; dx <= search_radius_chunks; ++dx) {
@@ -739,23 +755,28 @@ static void GenerateHeightmapAndInitGridCpu(ChunkCpuData& out, noise::module::Pe
 
 static void GenerateGridBasedRoadsCpu(ChunkCpuData& out) {
     int chunk_size = g_chunkSize;
-    int padding = Config::Highway::PADDING;
-    int seed = Config::Highway::SEED;
+    const auto& hwyParams = CoreParams::GetHighwayParams();
+    const auto& roadParams = CoreParams::GetRoadParams();
+    const auto& streetParams = CoreParams::GetStreetParams();
+
+    int padding = hwyParams.value("padding", 8);
+    int seed = hwyParams.value("seed", 42);
 
     out.roadGrid = generate_highways_grid(out.roadGrid, out.cx, out.cz, chunk_size, padding,
-        Config::Highway::NUM_HIGHWAYS, Config::Highway::WORM_LENGTH, Config::Highway::STEP_SIZE,
-        Config::Highway::PERLIN_SCALE, seed, Config::Highway::GRID_ANGLES, Config::Highway::NOISE_STRENGTH);
+        hwyParams.value("num_highways", 2), hwyParams.value("worm_length", 1000), hwyParams.value("step_size", 1.0f),
+        hwyParams.value("perlin_scale", 0.01f), seed, hwyParams.value("grid_angles", 36), hwyParams.value("noise_strength", 1.0f));
 
     out.roadGrid = generate_roads_grid(out.roadGrid, out.cx, out.cz, chunk_size, padding,
-        Config::Road::NUM_ROADS, Config::Road::WORM_LENGTH, Config::Road::STEP_SIZE,
-        Config::Road::PERLIN_SCALE, seed, Config::Road::GRID_ANGLES, Config::Road::NOISE_STRENGTH);
+        roadParams.value("num_roads", 20), roadParams.value("worm_length", 800), roadParams.value("step_size", 1.0f),
+        roadParams.value("perlin_scale", 0.01f), seed, roadParams.value("grid_angles", 18), roadParams.value("noise_strength", 10.0f));
 
     out.roadGrid = generate_streets_grid(out.roadGrid, out.cx, out.cz, chunk_size, padding,
-        Config::Street::NUM_STREETS, Config::Street::WORM_LENGTH, Config::Street::STEP_SIZE,
-        Config::Street::PERLIN_SCALE, seed, Config::Street::GRID_ANGLES, Config::Street::NOISE_STRENGTH);
+        streetParams.value("num_streets", 20), streetParams.value("worm_length", 400), streetParams.value("step_size", 1.0f),
+        streetParams.value("perlin_scale", 0.01f), seed, streetParams.value("grid_angles", 12), streetParams.value("noise_strength", 1.0f));
 
+    const auto& buildingParams = CoreParams::GetBuildingParams();
     out.buildings = generate_buildings_grid(out.roadGrid, out.cx, out.cz, chunk_size, padding,
-        Config::Building::DENSITY, Config::Building::SEED);
+        buildingParams.value("density", 20.0f), buildingParams.value("seed", 42));
 }
 
 static void BuildMeshFromGridCpu(const ChunkCpuData& src, int roadType, std::vector<float>& vertices, std::vector<unsigned int>& indices) {
@@ -845,7 +866,7 @@ static void BuildBuildingMeshFromGridCpu(const ChunkCpuData& src, std::vector<fl
         if (gx < 0 || gz < 0 || gx >= g_chunkSize || gz >= g_chunkSize) return 0.0f;
         if (src.roadGrid[gz][gx] != BUILDING) return 0.0f;
         float hh = heightGrid[gz][gx];
-        if (hh <= 0.0f) hh = Config::Building::ROAD_MIN_HEIGHT;
+        if (hh <= 0.0f) hh = CoreParams::GetBuildingParams().value("road_min_height", 10.0f);
         return hh;
     };
 
@@ -965,7 +986,7 @@ static ChunkCpuData GenerateChunkCpuData(int cx, int cz, noise::module::Perlin& 
 
 static void ChunkWorkerMain() {
     noise::module::Perlin perlinLocal;
-    perlinLocal.SetSeed(Config::World::PERLIN_SEED);
+    perlinLocal.SetSeed(CoreParams::GetWorldParams().value("perlin_seed", 1337));
     perlinLocal.SetFrequency(g_heightFrequency);
 
     while (!g_chunkWorkerStop.load()) {
@@ -1119,9 +1140,13 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
         if (terrainProgram != 0 && c.VAO != 0 && c.indexCount > 0) {
             glUseProgram(terrainProgram);
             GLint loc = glGetUniformLocation(terrainProgram, "uMVP");
-            GLint colorLoc = glGetUniformLocation(terrainProgram, "uColor");
+                GLint colorLoc = glGetUniformLocation(terrainProgram, "uColor");
+                const auto& terrainParams = CoreParams::GetTerrainParams();
+                const float terrainR = terrainParams.value("color_r", 76) / 255.0f;
+                const float terrainG = terrainParams.value("color_g", 204) / 255.0f;
+                const float terrainB = terrainParams.value("color_b", 76) / 255.0f;
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, Config::Terrain::COLOR_R / 255.0f, Config::Terrain::COLOR_G / 255.0f, Config::Terrain::COLOR_B / 255.0f);
+            glUniform3f(colorLoc, terrainR, terrainG, terrainB);
             glBindVertexArray(c.VAO);
             glDrawElements(GL_TRIANGLES, c.indexCount, GL_UNSIGNED_INT, 0);
         }
@@ -1132,7 +1157,8 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(highwaysProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(highwaysProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, Config::Highway::COLOR_R / 255.0f, Config::Highway::COLOR_G / 255.0f, Config::Highway::COLOR_B / 255.0f);
+            const auto& hwyParams = CoreParams::GetHighwayParams();
+            glUniform3f(colorLoc, hwyParams.value("color_r", 255) / 255.0f, hwyParams.value("color_g", 0) / 255.0f, hwyParams.value("color_b", 0) / 255.0f);
             glBindVertexArray(c.highwayVAO);
             glDrawElements(GL_TRIANGLES, c.highwayIndexCount, GL_UNSIGNED_INT, 0);
         }
@@ -1143,7 +1169,8 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(roadsProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(roadsProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, Config::Road::COLOR_R / 255.0f, Config::Road::COLOR_G / 255.0f, Config::Road::COLOR_B / 255.0f);
+            const auto& roadParams = CoreParams::GetRoadParams();
+            glUniform3f(colorLoc, roadParams.value("color_r", 255) / 255.0f, roadParams.value("color_g", 255) / 255.0f, roadParams.value("color_b", 0) / 255.0f);
             glBindVertexArray(c.roadVAO);
             glDrawElements(GL_TRIANGLES, c.roadIndexCount, GL_UNSIGNED_INT, 0);
         }
@@ -1154,7 +1181,8 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(streetsProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(streetsProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, Config::Street::COLOR_R / 255.0f, Config::Street::COLOR_G / 255.0f, Config::Street::COLOR_B / 255.0f);
+            const auto& streetParams = CoreParams::GetStreetParams();
+            glUniform3f(colorLoc, streetParams.value("color_r", 0) / 255.0f, streetParams.value("color_g", 0) / 255.0f, streetParams.value("color_b", 255) / 255.0f);
             glBindVertexArray(c.streetVAO);
             glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
         }
@@ -1165,7 +1193,8 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             GLint loc = glGetUniformLocation(buildingsProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(buildingsProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(colorLoc, Config::Building::COLOR_R / 255.0f, Config::Building::COLOR_G / 255.0f, Config::Building::COLOR_B / 255.0f);
+            const auto& buildingParams = CoreParams::GetBuildingParams();
+            glUniform3f(colorLoc, buildingParams.value("color_r", 180) / 255.0f, buildingParams.value("color_g", 180) / 255.0f, buildingParams.value("color_b", 180) / 255.0f);
             glBindVertexArray(c.buildingVAO);
             glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
         }
@@ -1197,27 +1226,32 @@ static void DrawChunkGeometry(const Chunk& c, GLint modelLoc, GLint colorLoc) {
     glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
 
     if (c.VAO != 0 && c.indexCount > 0) {
-        glUniform3f(colorLoc, Config::Terrain::COLOR_R / 255.0f, Config::Terrain::COLOR_G / 255.0f, Config::Terrain::COLOR_B / 255.0f);
+        const auto& terrainParams = CoreParams::GetTerrainParams();
+        glUniform3f(colorLoc, terrainParams.value("color_r", 76) / 255.0f, terrainParams.value("color_g", 204) / 255.0f, terrainParams.value("color_b", 76) / 255.0f);
         glBindVertexArray(c.VAO);
         glDrawElements(GL_TRIANGLES, c.indexCount, GL_UNSIGNED_INT, 0);
     }
     if (c.highwayVAO != 0 && c.highwayIndexCount > 0) {
-        glUniform3f(colorLoc, Config::Highway::COLOR_R / 255.0f, Config::Highway::COLOR_G / 255.0f, Config::Highway::COLOR_B / 255.0f);
+        const auto& hwyParams = CoreParams::GetHighwayParams();
+        glUniform3f(colorLoc, hwyParams.value("color_r", 255) / 255.0f, hwyParams.value("color_g", 0) / 255.0f, hwyParams.value("color_b", 0) / 255.0f);
         glBindVertexArray(c.highwayVAO);
         glDrawElements(GL_TRIANGLES, c.highwayIndexCount, GL_UNSIGNED_INT, 0);
     }
     if (c.roadVAO != 0 && c.roadIndexCount > 0) {
-        glUniform3f(colorLoc, Config::Road::COLOR_R / 255.0f, Config::Road::COLOR_G / 255.0f, Config::Road::COLOR_B / 255.0f);
+        const auto& roadParams = CoreParams::GetRoadParams();
+        glUniform3f(colorLoc, roadParams.value("color_r", 255) / 255.0f, roadParams.value("color_g", 255) / 255.0f, roadParams.value("color_b", 0) / 255.0f);
         glBindVertexArray(c.roadVAO);
         glDrawElements(GL_TRIANGLES, c.roadIndexCount, GL_UNSIGNED_INT, 0);
     }
     if (c.streetVAO != 0 && c.streetIndexCount > 0) {
-        glUniform3f(colorLoc, Config::Street::COLOR_R / 255.0f, Config::Street::COLOR_G / 255.0f, Config::Street::COLOR_B / 255.0f);
+        const auto& streetParams = CoreParams::GetStreetParams();
+        glUniform3f(colorLoc, streetParams.value("color_r", 0) / 255.0f, streetParams.value("color_g", 0) / 255.0f, streetParams.value("color_b", 255) / 255.0f);
         glBindVertexArray(c.streetVAO);
         glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
     }
     if (c.buildingVAO != 0 && c.buildingIndexCount > 0) {
-        glUniform3f(colorLoc, Config::Building::COLOR_R / 255.0f, Config::Building::COLOR_G / 255.0f, Config::Building::COLOR_B / 255.0f);
+        const auto& buildingParams = CoreParams::GetBuildingParams();
+        glUniform3f(colorLoc, buildingParams.value("color_r", 180) / 255.0f, buildingParams.value("color_g", 180) / 255.0f, buildingParams.value("color_b", 180) / 255.0f);
         glBindVertexArray(c.buildingVAO);
         glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
     }
@@ -1228,7 +1262,7 @@ void RenderTerrainToGBuffer(GLuint geometryShader, const glm::mat4& proj, const 
     if (geometryShader == 0) return;
 
     // ── Collect previous-frame occlusion query results ──
-    if (Config::Rendering::Culling::OCCLUSION_ENABLED) {
+    if (CoreParams::GetRenderingCullingParams().value("occlusion_enabled", true)) {
         g_occlusionCuller.BeginFrame();
     }
 
@@ -1280,7 +1314,7 @@ void RenderTerrainToGBuffer(GLuint geometryShader, const glm::mat4& proj, const 
 
         // Nearby chunks (camera chunk + immediate neighbours) are NEVER
         // occlusion-culled to prevent the player's surroundings from popping.
-        const bool canOcclude = Config::Rendering::Culling::OCCLUSION_ENABLED && !ref.nearby;
+        const bool canOcclude = CoreParams::GetRenderingCullingParams().value("occlusion_enabled", true) && !ref.nearby;
 
         // ── Occlusion cull (previous-frame result) ──
         if (canOcclude && !g_occlusionCuller.IsChunkVisible(chunkKey)) {
@@ -1302,7 +1336,7 @@ void RenderTerrainToGBuffer(GLuint geometryShader, const glm::mat4& proj, const 
 
     glBindVertexArray(0);
 
-    if (Config::Rendering::Culling::OCCLUSION_ENABLED) {
+    if (CoreParams::GetRenderingCullingParams().value("occlusion_enabled", true)) {
         g_occlusionCuller.EndFrame();
     }
 }

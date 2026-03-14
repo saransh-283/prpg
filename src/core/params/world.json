@@ -1,0 +1,7 @@
+{
+  "initial_view_radius": 3,
+  "chunk_size": 128,
+  "vertex_spacing": 0.5,
+  "view_radius": 3,
+  "perlin_seed": 1337
+}

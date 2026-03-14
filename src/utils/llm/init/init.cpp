@@ -1,6 +1,6 @@
 #include "init.h"
 
-#include <core/config.h>
+#include <core/params/params.h>
 
 #include "../internal/state.h"
 
@@ -42,10 +42,11 @@ static bool load_state(const std::string& model_path,
     // initialize the context
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = n_ctx;
-    ctx_params.n_batch = Config::LLM::BATCH_SIZE;
-    ctx_params.n_ubatch = Config::LLM::MICRO_BATCH_SIZE;
-    ctx_params.n_threads = Config::LLM::CPU_THREADS;
-    ctx_params.n_threads_batch = Config::LLM::BATCH_THREADS;
+    const auto& llm = CoreParams::GetLLMParams();
+    ctx_params.n_batch = static_cast<int>(llm.value("batch_size", 8192));
+    ctx_params.n_ubatch = static_cast<int>(llm.value("micro_batch_size", 512));
+    ctx_params.n_threads = static_cast<int>(llm.value("cpu_threads", 16));
+    ctx_params.n_threads_batch = static_cast<int>(llm.value("batch_threads", 16));
 
     out_ctx = llama_init_from_model(out_model, ctx_params);
     if (!out_ctx) {
@@ -57,9 +58,9 @@ static bool load_state(const std::string& model_path,
 
     // initialize the sampler
     out_sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    llama_sampler_chain_add(out_sampler, llama_sampler_init_min_p(Config::LLM::MIN_P, 1));
-    llama_sampler_chain_add(out_sampler, llama_sampler_init_temp(Config::LLM::TEMPERATURE));
-    llama_sampler_chain_add(out_sampler, llama_sampler_init_dist(Config::LLM::DEFAULT_SEED));
+    llama_sampler_chain_add(out_sampler, llama_sampler_init_min_p(static_cast<float>(llm.value("min_p", 0.05)), 1));
+    llama_sampler_chain_add(out_sampler, llama_sampler_init_temp(static_cast<float>(llm.value("temperature", 0.8))));
+    llama_sampler_chain_add(out_sampler, llama_sampler_init_dist(static_cast<int>(llm.value("default_seed", 0))));
 
     return true;
 }

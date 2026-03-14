@@ -1,0 +1,7 @@
+{
+  "mouse_sensitivity": 0.12,
+  "move_speed": 15.0,
+  "gravity": -9.81,
+  "collision_radius": 0.45,
+  "eye_height": 2.0
+}

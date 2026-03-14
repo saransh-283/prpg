@@ -14,6 +14,10 @@ Player::Player()
     , onGround(false)
     , mouseCaptured(true)
 {
+    const auto& p = CoreParams::GetPlayerParams();
+    mouseSensitivity = p.value("mouse_sensitivity", 0.1f);
+    moveSpeed = p.value("move_speed", 5.0f);
+    gravity = p.value("gravity", -9.8f);
 }
 
 void Player::Initialize(const glm::vec3& initialPosition)
@@ -57,7 +61,8 @@ void Player::HandleKeyboard(const Uint8* keyboardState, float deltaTime, const N
     if (glm::length(delta) < 0.0001f) return;
     delta = glm::normalize(glm::vec3(delta.x, 0.0f, delta.z)) * moveSpeed * deltaTime;
 
-    const float r = Config::Player::COLLISION_RADIUS;
+    const auto& p = CoreParams::GetPlayerParams();
+    const float r = static_cast<float>(p.value("collision_radius", 0.5f));
     glm::vec3 newPos = cameraPos;
 
     auto collides = [&](float x, float z) {
@@ -125,7 +130,8 @@ void Player::ApplyGravity(float deltaTime)
 void Player::CheckGroundCollision()
 {
     // Ensure player stays above terrain
-    float groundY = SampleTerrainHeight(cameraPos.x, cameraPos.z) + Config::Player::EYE_HEIGHT;
+    const auto& p = CoreParams::GetPlayerParams();
+    float groundY = SampleTerrainHeight(cameraPos.x, cameraPos.z) + static_cast<float>(p.value("eye_height", 1.6f));
     if (cameraPos.y <= groundY) {
         cameraPos.y = groundY;
         velocity.y = 0.0f;

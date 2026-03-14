@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <noise/noise.h>
 #include <glm/glm.hpp>
-#include "../../core/config.h"
+#include <core/params/params.h>
 
 // Forward declaration (definition appears later in this file)
 static double deterministic_unit(int64_t a, int64_t b, int64_t c);
@@ -109,6 +109,7 @@ std::vector<std::vector<glm::vec2>> generate_highways_chunk_polylines(int chunk_
 
     noise::module::Perlin perlin;
     perlin.SetSeed(seed);
+    const auto& highway = CoreParams::GetHighwayParams();
 
     // Choose a global grid spacing so neighboring chunks will consider the same seed cells
     int cell_spacing = std::max(16, padding / 2);
@@ -133,8 +134,8 @@ std::vector<std::vector<glm::vec2>> generate_highways_chunk_polylines(int chunk_
             std::vector<glm::vec2> poly;
             poly.reserve(worm_length);
 
-            const float maxTurn = deg2rad(Config::Highway::MAX_TURN_DEG);
-            const float maxTurnPerStep = deg2rad(Config::Highway::MAX_TURN_DEG_PER_STEP);
+            const float maxTurn = deg2rad(static_cast<float>(highway.value("max_turn_deg", 20.0)));
+            const float maxTurnPerStep = deg2rad(static_cast<float>(highway.value("max_turn_deg_per_step", 0.75)));
             float heading = quantized_angle((float)x, (float)y, perlin_scale, grid_angles, noise_strength, perlin);
 
             bool inBend = false;
@@ -152,13 +153,13 @@ std::vector<std::vector<glm::vec2>> generate_highways_chunk_polylines(int chunk_
 
                     if (inBend) {
                         inBend = false;
-                        phaseRemaining = pick_steps_range(Config::Highway::STRAIGHT_MIN_STEPS,
-                                                         Config::Highway::STRAIGHT_MAX_STEPS,
+                        phaseRemaining = pick_steps_range(static_cast<int>(highway.value("straight_min_steps", 80)),
+                                                         static_cast<int>(highway.value("straight_max_steps", 140)),
                                                          xi, yi, salt);
                     } else {
                         inBend = true;
-                        phaseRemaining = pick_steps_range(Config::Highway::BEND_MIN_STEPS,
-                                                         Config::Highway::BEND_MAX_STEPS,
+                        phaseRemaining = pick_steps_range(static_cast<int>(highway.value("bend_min_steps", 20)),
+                                                         static_cast<int>(highway.value("bend_max_steps", 40)),
                                                          xi, yi, salt);
 
                         float rawDesired = quantized_angle((float)x, (float)y, perlin_scale, grid_angles, noise_strength, perlin);
@@ -225,7 +226,8 @@ std::vector<std::vector<int>> generate_highways_grid(const std::vector<std::vect
     // Highway seeds: evaluate a sparse global grid in a local+neighbor margin.
     // Using a per-cell deterministic predicate keeps results consistent across chunks.
     // The spawn probability targets ~num_highways expected starts in this window.
-    const int cell_spacing = std::max(8, Config::Highway::GLOBAL_CELL_SPACING);
+    const auto& highway = CoreParams::GetStreetParams();
+    const int cell_spacing = std::max(8, static_cast<int>(highway.value("global_cell_spacing", 64)));
     const double seed_margin = (double)chunk_size;
 
     const double wx0 = (double)wx - seed_margin;
@@ -242,7 +244,7 @@ std::vector<std::vector<int>> generate_highways_grid(const std::vector<std::vect
     const int64_t ny = (int64_t)gy_max - (int64_t)gy_min + 1;
     const double cellCount = (nx > 0 && ny > 0) ? (double)(nx * ny) : 0.0;
 
-    const double baseProb = std::min(1.0, std::max(0.0, (double)Config::Highway::GLOBAL_SEED_PROB));
+    const double baseProb = std::min(1.0, std::max(0.0, (double)highway.value("global_seed_prob", 0.006)));
     const double targetProb = (cellCount > 0.0 && num_highways > 0) ? std::min(1.0, std::max(0.0, (double)num_highways / cellCount)) : 0.0;
     const double spawnProb = std::min(1.0, std::max(baseProb, targetProb));
 
@@ -256,16 +258,16 @@ std::vector<std::vector<int>> generate_highways_grid(const std::vector<std::vect
             double v = deterministic_unit(gx, gy, seed + 1);
             double x = gx * (double)cell_spacing + u * (double)cell_spacing;
             double y = gy * (double)cell_spacing + v * (double)cell_spacing;
-
-            const float maxTurn = deg2rad(Config::Highway::MAX_TURN_DEG);
-            const float maxTurnPerStep = deg2rad(Config::Highway::MAX_TURN_DEG_PER_STEP);
+            
+            const float maxTurn = deg2rad(static_cast<float>(highway.value("max_turn_deg", 20.0)));
+            const float maxTurnPerStep = deg2rad(static_cast<float>(highway.value("max_turn_deg_per_step", 0.75)));
             float heading = quantized_angle((float)x, (float)y, perlin_scale, grid_angles, noise_strength, perlin);
 
             bool inBend = false;
             float bendTarget = heading;
             int phaseRemaining = 0;
 
-            float smoothRadius = (Config::Highway::THICKNESS_MIN + Config::Highway::THICKNESS_MAX) * 0.5f;
+            float smoothRadius = (static_cast<float>(highway.value("thickness_min", 2.5)) + static_cast<float>(highway.value("thickness_max", 4.5))) * 0.5f;
 
             for (int j = 0; j < worm_length; ++j) {
                 int grid_x = static_cast<int>(std::floor(x - (double)wx));
@@ -273,12 +275,12 @@ std::vector<std::vector<int>> generate_highways_grid(const std::vector<std::vect
 
                 if (grid_x >= 0 && grid_x < padded_size && grid_y >= 0 && grid_y < padded_size) {
                     // Smooth thickness from Perlin (map [-1,1] -> [0,1]).
-                    double n = thicknessPerlin.GetValue(x * Config::Highway::THICKNESS_PERLIN_SCALE,
-                                                       y * Config::Highway::THICKNESS_PERLIN_SCALE,
+                    double n = thicknessPerlin.GetValue(x * highway.value("thickness_perlin_scale", 0.0025),
+                                                       y * highway.value("thickness_perlin_scale", 0.0025),
                                                        0.0);
                     float t = clamp01(static_cast<float>((n + 1.0) * 0.5));
-                    float targetRadius = lerp(Config::Highway::THICKNESS_MIN, Config::Highway::THICKNESS_MAX, t);
-                    smoothRadius = lerp(smoothRadius, targetRadius, Config::Highway::THICKNESS_SMOOTH_ALPHA);
+                    float targetRadius = lerp(static_cast<float>(highway.value("thickness_min", 2.5)), static_cast<float>(highway.value("thickness_max", 4.5)), t);
+                    smoothRadius = lerp(smoothRadius, targetRadius, static_cast<float>(highway.value("thickness_smooth_alpha", 0.03)));
 
                     // Paint disc onto terrain only (0). Highways are type 1.
                     paint_disc_if(padded_grid, grid_x, grid_y, smoothRadius, 1, 0);
@@ -291,13 +293,13 @@ std::vector<std::vector<int>> generate_highways_grid(const std::vector<std::vect
 
                     if (inBend) {
                         inBend = false;
-                        phaseRemaining = pick_steps_range(Config::Highway::STRAIGHT_MIN_STEPS,
-                                                         Config::Highway::STRAIGHT_MAX_STEPS,
+                        phaseRemaining = pick_steps_range(static_cast<int>(highway.value("straight_min_steps", 80)),
+                                                         static_cast<int>(highway.value("straight_max_steps", 140)),
                                                          xi, yi, salt);
                     } else {
                         inBend = true;
-                        phaseRemaining = pick_steps_range(Config::Highway::BEND_MIN_STEPS,
-                                                         Config::Highway::BEND_MAX_STEPS,
+                        phaseRemaining = pick_steps_range(static_cast<int>(highway.value("bend_min_steps", 20)),
+                                                         static_cast<int>(highway.value("bend_max_steps", 40)),
                                                          xi, yi, salt);
 
                         float rawDesired = quantized_angle((float)x, (float)y, perlin_scale, grid_angles, noise_strength, perlin);

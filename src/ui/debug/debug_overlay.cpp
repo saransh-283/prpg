@@ -1,14 +1,14 @@
 #include <ui/debug/debug_overlay.h>
-#include <core/config.h>
+#include <core/params/params.h>
 #include <stdio.h>
 #include <objects/text/text_renderer.h>
 #include <world/terrain/terrain.h>
 #include <glm/gtc/type_ptr.hpp>
 
-static bool g_visible = Config::UI::Debug::VISIBLE_BY_DEFAULT;
+static bool g_visible = CoreParams::GetUiDebugParams().value("visible_by_default", true);
 
 void InitDebugOverlay() {
-    g_visible = Config::UI::Debug::VISIBLE_BY_DEFAULT;
+    g_visible = CoreParams::GetUiDebugParams().value("visible_by_default", true);
 }
 
 void CleanupDebugOverlay() {
@@ -27,9 +27,10 @@ void RenderDebugOverlay(int windowW, int windowH, bool wireframeMode, const glm:
     if (!g_visible) return;
 
     // Draw a simple debug panel in the top-left like the screenshot
-    const float padX = Config::UI::Debug::PADDING_X;
-    const float padY = Config::UI::Debug::PADDING_Y;
-    const float lineH = Config::UI::Debug::LINE_HEIGHT;
+    const json& uj = CoreParams::GetUiDebugParams();
+    const float padX = static_cast<float>(uj.value("padding_x", 10.0));
+    const float padY = static_cast<float>(uj.value("padding_y", 10.0));
+    const float lineH = static_cast<float>(uj.value("line_height", 30.0));
 
     RenderTextOverlay("PROCGEN - Minimal Text Demo", padX, padY + 0.0f, windowW, windowH);
     RenderTextOverlay("Press ESC or close window to exit", padX, padY + lineH, windowW, windowH);

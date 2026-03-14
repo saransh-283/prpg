@@ -1,0 +1,38 @@
+{
+  "size": 220,
+  "margin": 10,
+  "world_radius": 40.0,
+  "map_world_radius_multiplier": 3.0,
+  "map_scroll_speed": 50.0,
+  "zoom_default": 1.0,
+  "zoom_min": 0.5,
+  "zoom_max": 5.0,
+  "zoom_step": 0.2,
+  "camera_height": 200.0,
+  "marker_size_minimap": 0.03,
+  "marker_size_map": 0.02,
+  "marker_height_offset": 50.0,
+  "chunk_border_height": 100.0,
+  "chunk_border_r": 0.5,
+  "chunk_border_g": 0.5,
+  "chunk_border_b": 0.5
+}
+{
+  "size": 220,
+  "margin": 10,
+  "world_radius": 40.0,
+  "map_world_radius_multiplier": 3.0,
+  "map_scroll_speed": 50.0,
+  "zoom_default": 1.0,
+  "zoom_min": 0.5,
+  "zoom_max": 5.0,
+  "zoom_step": 0.2,
+  "camera_height": 200.0,
+  "marker_size_minimap": 0.03,
+  "marker_size_map": 0.02,
+  "marker_height_offset": 50.0,
+  "chunk_border_height": 100.0,
+  "chunk_border_r": 0.5,
+  "chunk_border_g": 0.5,
+  "chunk_border_b": 0.5
+}

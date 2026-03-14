@@ -148,7 +148,7 @@ namespace Models {
 // ============================================================================
 namespace Entities {
     // NPC parameters (palette, etc.)
-    constexpr const char* NPC_PARAMS = "src/entities/npc/npc_params.json";
+    constexpr const char* NPC_PARAMS = "src/core/params/npc.json";
 }
 
 // ============================================================================

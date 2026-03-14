@@ -8,7 +8,7 @@
 #include <iostream>
 #include <noise/noise.h>
 #include <glm/glm.hpp>
-#include "../../core/config.h"
+#include <core/params/params.h>
 
 // Forward declaration (definition appears later in this file)
 static double deterministic_unit(int64_t a, int64_t b, int64_t c);
@@ -166,8 +166,9 @@ static std::vector<glm::vec2> generate_street_worm(float start_x, float start_y,
 
     float x = start_x;
     float y = start_y;
-    const float maxTurn = deg2rad(Config::Street::MAX_TURN_DEG);
-    const float maxTurnPerStep = deg2rad(Config::Street::MAX_TURN_DEG_PER_STEP);
+    const auto& street = CoreParams::GetStreetParams();
+    const float maxTurn = deg2rad(static_cast<float>(street.value("max_turn_deg", 60.0)));
+    const float maxTurnPerStep = deg2rad(static_cast<float>(street.value("max_turn_deg_per_step", 6.0)));
     float heading = wrap_pi(initial_angle);
     bool inBend = false;
     float bendTarget = heading;
@@ -183,13 +184,13 @@ static std::vector<glm::vec2> generate_street_worm(float start_x, float start_y,
 
             if (inBend) {
                 inBend = false;
-                phaseRemaining = pick_steps_range(Config::Street::STRAIGHT_MIN_STEPS,
-                                                 Config::Street::STRAIGHT_MAX_STEPS,
+                phaseRemaining = pick_steps_range(static_cast<int>(street.value("straight_min_steps", 6)),
+                                                 static_cast<int>(street.value("straight_max_steps", 18)),
                                                  xi, yi, salt);
             } else {
                 inBend = true;
-                phaseRemaining = pick_steps_range(Config::Street::BEND_MIN_STEPS,
-                                                 Config::Street::BEND_MAX_STEPS,
+                phaseRemaining = pick_steps_range(static_cast<int>(street.value("bend_min_steps", 10)),
+                                                 static_cast<int>(street.value("bend_max_steps", 22)),
                                                  xi, yi, salt);
 
                 float rawDesired = quantized_angle(x, y, perlin_scale * 2.0f, grid_angles, noise_strength, perlin);
@@ -369,14 +370,15 @@ std::vector<std::vector<int>> generate_streets_grid(const std::vector<std::vecto
         double y = start_y + std::sin(street_direction) * offset_distance;
         int street_length = worm_length / 3; // Streets are shorter
 
-        const float maxTurn = deg2rad(Config::Street::MAX_TURN_DEG);
-        const float maxTurnPerStep = deg2rad(Config::Street::MAX_TURN_DEG_PER_STEP);
+        const auto& street = CoreParams::GetStreetParams();
+        const float maxTurn = deg2rad(static_cast<float>(street.value("max_turn_deg", 60.0)));
+        const float maxTurnPerStep = deg2rad(static_cast<float>(street.value("max_turn_deg_per_step", 6.0)));
         float heading = wrap_pi(street_direction);
         bool inBend = false;
         float bendTarget = heading;
         int phaseRemaining = 0;
 
-        float smoothRadius = (Config::Street::THICKNESS_MIN + Config::Street::THICKNESS_MAX) * 0.5f;
+        float smoothRadius = (static_cast<float>(street.value("thickness_min", 0.5)) + static_cast<float>(street.value("thickness_max", 1.0))) * 0.5f;
         
         for (int j = 0; j < street_length; ++j) {
             // Convert world coordinates to grid coordinates
@@ -391,12 +393,12 @@ std::vector<std::vector<int>> generate_streets_grid(const std::vector<std::vecto
                 }
 
                 // Smooth thickness from Perlin and paint onto terrain only.
-                double n = thicknessPerlin.GetValue(x * Config::Street::THICKNESS_PERLIN_SCALE,
-                                                   y * Config::Street::THICKNESS_PERLIN_SCALE,
+                double n = thicknessPerlin.GetValue(x * street.value("thickness_perlin_scale", 0.0035),
+                                                   y * street.value("thickness_perlin_scale", 0.0035),
                                                    0.0);
                 float t = clamp01(static_cast<float>((n + 1.0) * 0.5));
-                float targetRadius = lerp(Config::Street::THICKNESS_MIN, Config::Street::THICKNESS_MAX, t);
-                smoothRadius = lerp(smoothRadius, targetRadius, Config::Street::THICKNESS_SMOOTH_ALPHA);
+                float targetRadius = lerp(static_cast<float>(street.value("thickness_min", 0.5)), static_cast<float>(street.value("thickness_max", 1.0)), t);
+                smoothRadius = lerp(smoothRadius, targetRadius, static_cast<float>(street.value("thickness_smooth_alpha", 0.05)));
 
                 paint_disc_if(padded_grid, street_grid_x, street_grid_y, smoothRadius, 3, 0);
             } else {
@@ -410,13 +412,13 @@ std::vector<std::vector<int>> generate_streets_grid(const std::vector<std::vecto
 
                 if (inBend) {
                     inBend = false;
-                    phaseRemaining = pick_steps_range(Config::Street::STRAIGHT_MIN_STEPS,
-                                                     Config::Street::STRAIGHT_MAX_STEPS,
+                    phaseRemaining = pick_steps_range(static_cast<int>(street.value("straight_min_steps", 6)),
+                                                     static_cast<int>(street.value("straight_max_steps", 18)),
                                                      xi, yi, salt);
                 } else {
                     inBend = true;
-                    phaseRemaining = pick_steps_range(Config::Street::BEND_MIN_STEPS,
-                                                     Config::Street::BEND_MAX_STEPS,
+                    phaseRemaining = pick_steps_range(static_cast<int>(street.value("bend_min_steps", 10)),
+                                                     static_cast<int>(street.value("bend_max_steps", 22)),
                                                      xi, yi, salt);
 
                     float rawDesired = quantized_angle((float)x, (float)y, perlin_scale * 2.0f, grid_angles, noise_strength, perlin);

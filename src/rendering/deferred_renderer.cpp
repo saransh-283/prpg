@@ -1,7 +1,7 @@
 #include "deferred_renderer.h"
 #include <utils/shaders/shader_utils.h>
 #include <core/resources.h>
-#include <core/config.h>
+#include <core/params/params.h>
 #include <glm/gtc/type_ptr.hpp>
 #include <iostream>
 
@@ -323,13 +323,14 @@ namespace DeferredRenderer {
         glUniform1f(glGetUniformLocation(lightingShader, "sunIntensity"), sun.intensity);
 
         // Ambient (hemisphere) lighting + shadow tuning
-        glUniform1f(glGetUniformLocation(lightingShader, "ambientIntensity"), Config::Rendering::Ambient::INTENSITY);
-        glUniform1f(glGetUniformLocation(lightingShader, "ambientMin"), Config::Rendering::Ambient::MIN);
-        const glm::vec3 ambientSky(Config::Rendering::Ambient::SKY_R, Config::Rendering::Ambient::SKY_G, Config::Rendering::Ambient::SKY_B);
-        const glm::vec3 ambientGround(Config::Rendering::Ambient::GROUND_R, Config::Rendering::Ambient::GROUND_G, Config::Rendering::Ambient::GROUND_B);
+        const auto& amb = CoreParams::GetRenderingAmbientParams();
+        glUniform1f(glGetUniformLocation(lightingShader, "ambientIntensity"), amb.value("intensity", 0.55f));
+        glUniform1f(glGetUniformLocation(lightingShader, "ambientMin"), amb.value("min", 0.08f));
+        const glm::vec3 ambientSky(amb.value("sky_r", 0.62f), amb.value("sky_g", 0.74f), amb.value("sky_b", 0.92f));
+        const glm::vec3 ambientGround(amb.value("ground_r", 0.26f), amb.value("ground_g", 0.26f), amb.value("ground_b", 0.28f));
         glUniform3fv(glGetUniformLocation(lightingShader, "ambientSkyColor"), 1, glm::value_ptr(ambientSky));
         glUniform3fv(glGetUniformLocation(lightingShader, "ambientGroundColor"), 1, glm::value_ptr(ambientGround));
-        glUniform1f(glGetUniformLocation(lightingShader, "shadowStrength"), Config::Rendering::Shadows::STRENGTH);
+        glUniform1f(glGetUniformLocation(lightingShader, "shadowStrength"), CoreParams::GetRenderingShadowsParams().value("strength", 0.45f));
 
         glm::mat4 lightSpaceMatrix = GetLightSpaceMatrix();
         glUniformMatrix4fv(glGetUniformLocation(lightingShader, "lightSpaceMatrix"), 1, GL_FALSE, glm::value_ptr(lightSpaceMatrix));

@@ -1,0 +1,5 @@
+{
+  "near_plane": 0.1,
+  "far_plane": 1000.0,
+  "fov": 60.0
+}

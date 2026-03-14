@@ -1,0 +1,14 @@
+{
+  "default_gpu_layers": 16,
+  "default_context_size": 8192,
+  "batch_size": 8192,
+  "micro_batch_size": 512,
+  "cpu_threads": 16,
+  "batch_threads": 16,
+  "min_p": 0.05,
+  "temperature": 0.8,
+  "default_seed": 0,
+  "npc_name_radius": 20.0,
+  "npc_name_batch_window": 2.0,
+  "npc_name_history_size": 15
+}

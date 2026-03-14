@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <noise/noise.h>
 #include <glm/glm.hpp>
-#include "../../core/config.h"
+#include <core/params/params.h>
 
 // Forward declaration (definition appears later in this file)
 static double deterministic_unit(int64_t a, int64_t b, int64_t c);
@@ -109,6 +109,7 @@ std::vector<std::vector<glm::vec2>> generate_roads_chunk_polylines(int chunk_x, 
 
     noise::module::Perlin perlin;
     perlin.SetSeed(seed);
+    const auto& road = CoreParams::GetRoadParams();
 
     // Choose a global grid spacing so neighboring chunks will consider the same seed cells
     int cell_spacing = std::max(16, padding / 2);
@@ -133,8 +134,8 @@ std::vector<std::vector<glm::vec2>> generate_roads_chunk_polylines(int chunk_x, 
             std::vector<glm::vec2> poly;
             poly.reserve(worm_length);
 
-            const float maxTurn = deg2rad(Config::Road::MAX_TURN_DEG);
-            const float maxTurnPerStep = deg2rad(Config::Road::MAX_TURN_DEG_PER_STEP);
+            const float maxTurn = deg2rad(static_cast<float>(road.value("max_turn_deg", 45.0)));
+            const float maxTurnPerStep = deg2rad(static_cast<float>(road.value("max_turn_deg_per_step", 3.0)));
             float heading = quantized_angle((float)x, (float)y, perlin_scale, grid_angles, noise_strength, perlin);
 
             bool inBend = false;
@@ -152,13 +153,13 @@ std::vector<std::vector<glm::vec2>> generate_roads_chunk_polylines(int chunk_x, 
 
                     if (inBend) {
                         inBend = false;
-                        phaseRemaining = pick_steps_range(Config::Road::STRAIGHT_MIN_STEPS,
-                                                         Config::Road::STRAIGHT_MAX_STEPS,
+                        phaseRemaining = pick_steps_range(static_cast<int>(road.value("straight_min_steps", 20)),
+                                                         static_cast<int>(road.value("straight_max_steps", 40)),
                                                          xi, yi, salt);
                     } else {
                         inBend = true;
-                        phaseRemaining = pick_steps_range(Config::Road::BEND_MIN_STEPS,
-                                                         Config::Road::BEND_MAX_STEPS,
+                        phaseRemaining = pick_steps_range(static_cast<int>(road.value("bend_min_steps", 8)),
+                                                         static_cast<int>(road.value("bend_max_steps", 18)),
                                                          xi, yi, salt);
 
                         float rawDesired = quantized_angle((float)x, (float)y, perlin_scale, grid_angles, noise_strength, perlin);
@@ -321,15 +322,16 @@ std::vector<std::vector<int>> generate_roads_grid(const std::vector<std::vector<
             double x = start_x;
             double y = start_y;
 
-            const float maxTurn = deg2rad(Config::Road::MAX_TURN_DEG);
-            const float maxTurnPerStep = deg2rad(Config::Road::MAX_TURN_DEG_PER_STEP);
+            const auto& road = CoreParams::GetStreetParams();
+            const float maxTurn = deg2rad(static_cast<float>(road.value("max_turn_deg", 45.0)));
+            const float maxTurnPerStep = deg2rad(static_cast<float>(road.value("max_turn_deg_per_step", 3.0)));
             float heading = quantized_angle((float)x, (float)y, perlin_scale, grid_angles, noise_strength, perlin);
 
             bool inBend = false;
             float bendTarget = heading;
             int phaseRemaining = 0;
 
-            float smoothRadius = (Config::Road::THICKNESS_MIN + Config::Road::THICKNESS_MAX) * 0.5f;
+            float smoothRadius = (static_cast<float>(road.value("thickness_min", 0.8)) + static_cast<float>(road.value("thickness_max", 2.0))) * 0.5f;
             
             // Generate worm path
             for (int j = 0; j < worm_length; ++j) {
@@ -340,12 +342,12 @@ std::vector<std::vector<int>> generate_roads_grid(const std::vector<std::vector<
                 // Check bounds and mark as road if within grid
                 if (grid_x >= 0 && grid_x < padded_size && grid_y >= 0 && grid_y < padded_size) {
                     // Smooth thickness from Perlin (map [-1,1] -> [0,1]) and exponential smoothing.
-                    double n = thicknessPerlin.GetValue(x * Config::Road::THICKNESS_PERLIN_SCALE,
-                                                       y * Config::Road::THICKNESS_PERLIN_SCALE,
+                    double n = thicknessPerlin.GetValue(x * road.value("thickness_perlin_scale", 0.0035),
+                                                       y * road.value("thickness_perlin_scale", 0.0035),
                                                        0.0);
                     float t = clamp01(static_cast<float>((n + 1.0) * 0.5));
-                    float targetRadius = lerp(Config::Road::THICKNESS_MIN, Config::Road::THICKNESS_MAX, t);
-                    smoothRadius = lerp(smoothRadius, targetRadius, Config::Road::THICKNESS_SMOOTH_ALPHA);
+                    float targetRadius = lerp(static_cast<float>(road.value("thickness_min", 0.8)), static_cast<float>(road.value("thickness_max", 2.0)), t);
+                    smoothRadius = lerp(smoothRadius, targetRadius, static_cast<float>(road.value("thickness_smooth_alpha", 0.04)));
 
                     // Only paint onto terrain (0). This preserves highway priority and avoids overwriting.
                     paint_disc_if(padded_grid, grid_x, grid_y, smoothRadius, 2, 0);
@@ -358,13 +360,13 @@ std::vector<std::vector<int>> generate_roads_grid(const std::vector<std::vector<
 
                     if (inBend) {
                         inBend = false;
-                        phaseRemaining = pick_steps_range(Config::Road::STRAIGHT_MIN_STEPS,
-                                                         Config::Road::STRAIGHT_MAX_STEPS,
+                        phaseRemaining = pick_steps_range(static_cast<int>(road.value("straight_min_steps", 20)),
+                                                         static_cast<int>(road.value("straight_max_steps", 40)),
                                                          xi, yi, salt);
                     } else {
                         inBend = true;
-                        phaseRemaining = pick_steps_range(Config::Road::BEND_MIN_STEPS,
-                                                         Config::Road::BEND_MAX_STEPS,
+                        phaseRemaining = pick_steps_range(static_cast<int>(road.value("bend_min_steps", 8)),
+                                                         static_cast<int>(road.value("bend_max_steps", 18)),
                                                          xi, yi, salt);
 
                         float rawDesired = quantized_angle((float)x, (float)y, perlin_scale, grid_angles, noise_strength, perlin);
