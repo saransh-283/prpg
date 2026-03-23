@@ -16,6 +16,7 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
                GLuint roadsProgram,
                GLuint streetsProgram,
                GLuint buildingsProgram,
+               bool debugDrawCullingSemicircle,
                bool showFullMap = false,
                const glm::vec2& mapOffset = glm::vec2(0.0f));
 

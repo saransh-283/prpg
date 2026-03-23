@@ -444,20 +444,23 @@ void NpcSystem::RenderNameLabels(const glm::vec3& playerPos, const glm::mat4& pr
     }
 }
 
-void NpcSystem::RenderInstancesCommon(GLuint shaderProgram, int modelLoc, const glm::mat4& baseModel, const Frustum* frustum) const {
+void NpcSystem::RenderInstancesCommon(GLuint shaderProgram,
+                                      int modelLoc,
+                                      const glm::mat4& baseModel,
+                                      const glm::vec3& cameraPos,
+                                      const glm::vec3& cameraFront) const {
     if (!meshLoaded) return;
 
-    for (const auto& npc : npcs) {
-        // ── Per-NPC frustum cull (bounding sphere) ──
-        if (frustum) {
-            // Sphere center at NPC midpoint, radius encompasses the tallest scale.
-            const float halfH = npc.headLabelOffsetY * 0.5f;
-            const glm::vec3 center = npc.position + glm::vec3(0.0f, halfH, 0.0f);
-            const float radius = halfH + 0.5f; // generous margin
-            if (!frustum->TestSphere(center, radius))
-                continue;
-        }
+    const glm::vec2 forward2(cameraFront.x, cameraFront.z);
+    const float fLen2 = glm::dot(forward2, forward2);
+    const glm::vec2 f = (fLen2 < 1e-8f) ? glm::vec2(0.0f, 1.0f) : (forward2 / std::sqrt(fLen2));
 
+    for (const auto& npc : npcs) {
+        // Preprocessing: skip NPCs behind the camera in the XZ plane.
+        const glm::vec2 to2(npc.position.x - cameraPos.x, npc.position.z - cameraPos.z);
+        if (glm::dot(f, to2) < 0.0f) {
+            continue;
+        }
         // Important: translate first, then apply baseModel so scaling/rotation don't affect the translation.
         glm::mat4 model(1.0f);
         model = glm::translate(model, npc.position);
@@ -477,7 +480,11 @@ void NpcSystem::RenderInstancesCommon(GLuint shaderProgram, int modelLoc, const 
     glBindVertexArray(0);
 }
 
-void NpcSystem::RenderToGBuffer(GLuint geometryShader, const glm::mat4& proj, const glm::mat4& view, const Frustum& frustum) const {
+void NpcSystem::RenderToGBuffer(GLuint geometryShader,
+                                const glm::mat4& proj,
+                                const glm::mat4& view,
+                                const glm::vec3& cameraPos,
+                                const glm::vec3& cameraFront) const {
     if (!meshLoaded || geometryShader == 0) return;
 
     glUseProgram(geometryShader);
@@ -494,10 +501,13 @@ void NpcSystem::RenderToGBuffer(GLuint geometryShader, const glm::mat4& proj, co
     baseModel = glm::rotate(baseModel, glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
     baseModel = glm::scale(baseModel, glm::vec3(0.22f));
 
-    RenderInstancesCommon(geometryShader, modelLoc, baseModel, &frustum);
+    RenderInstancesCommon(geometryShader, modelLoc, baseModel, cameraPos, cameraFront);
 }
 
-void NpcSystem::RenderToShadowMap(GLuint shadowShader, const glm::mat4& lightSpaceMatrix) const {
+void NpcSystem::RenderToShadowMap(GLuint shadowShader,
+                                  const glm::mat4& lightSpaceMatrix,
+                                  const glm::vec3& cameraPos,
+                                  const glm::vec3& cameraFront) const {
     if (!meshLoaded || shadowShader == 0) return;
 
     glUseProgram(shadowShader);
@@ -511,7 +521,15 @@ void NpcSystem::RenderToShadowMap(GLuint shadowShader, const glm::mat4& lightSpa
     baseModel = glm::rotate(baseModel, glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
     baseModel = glm::scale(baseModel, glm::vec3(0.22f));
 
+    const glm::vec2 forward2(cameraFront.x, cameraFront.z);
+    const float fLen2 = glm::dot(forward2, forward2);
+    const glm::vec2 f = (fLen2 < 1e-8f) ? glm::vec2(0.0f, 1.0f) : (forward2 / std::sqrt(fLen2));
+
     for (const auto& npc : npcs) {
+        const glm::vec2 to2(npc.position.x - cameraPos.x, npc.position.z - cameraPos.z);
+        if (glm::dot(f, to2) < 0.0f) {
+            continue;
+        }
         glm::mat4 model(1.0f);
         model = glm::translate(model, npc.position);
         model *= baseModel;

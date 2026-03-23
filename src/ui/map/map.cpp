@@ -165,6 +165,7 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
                    GLuint roadsProgram,
                    GLuint streetsProgram,
                    GLuint buildingsProgram,
+                   bool debugDrawCullingSemicircle,
                    bool showFullMap,
                    const glm::vec2& mapOffset) {
     // Use internal offset instead of parameter (parameter kept for API compatibility)
@@ -228,7 +229,8 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
     (void)streetsProgram;
     (void)buildingsProgram;
 
-    const glm::mat4 mvpMini = projMini * viewMini * glm::mat4(1.0f);
+    // Map MVP used by layer shaders (world-space -> clip-space in the minimap camera).
+    const glm::mat4 mvpMini = projMini * viewMini;
 
     auto emitQuadXZ = [](std::vector<float>& out, float x0, float z0, float x1, float z1) {
         const float y = 0.0f;
@@ -365,8 +367,6 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
 
     GLboolean depthWasEnabled = glIsEnabled(GL_DEPTH_TEST);
     if (depthWasEnabled) glDisable(GL_DEPTH_TEST);
-    GLboolean cullWasEnabled = glIsEnabled(GL_CULL_FACE);
-    if (cullWasEnabled) glDisable(GL_CULL_FACE);
 
     for (int chunkCz = minChunkZ; chunkCz <= maxChunkZ; ++chunkCz) {
         for (int chunkCx = minChunkX; chunkCx <= maxChunkX; ++chunkCx) {
@@ -426,8 +426,44 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
     }
 
     glUseProgram(0);
-    if (cullWasEnabled) glEnable(GL_CULL_FACE);
     if (depthWasEnabled) glEnable(GL_DEPTH_TEST);
+
+    // ── Debug: draw culling semicircle indicator ──────────────────────
+    // The "front semicircle" used by preprocessing is the XZ half-plane where
+    // dot(forwardXZ, toPointXZ) >= 0. The boundary is a line through the camera
+    // position, perpendicular to the forward direction.
+    if (debugDrawCullingSemicircle && solidColorProgram && g_borderVAO && g_borderVBO) {
+        GLboolean depthEnabledBefore = glIsEnabled(GL_DEPTH_TEST);
+        if (depthEnabledBefore) glDisable(GL_DEPTH_TEST);
+
+        const glm::vec2 f2dbg = SafeNormalize2(glm::vec2(cameraFront.x, cameraFront.z), glm::vec2(0.0f, 1.0f));
+        const glm::vec2 perp(-f2dbg.y, f2dbg.x);
+        const float r = std::max(worldRadiusX, worldRadiusY) * 1.1f;
+
+        const float camX = cameraPos.x;
+        const float camZ = cameraPos.z;
+
+        // 2 lines (4 vertices): boundary line + forward direction line.
+        float lineVerts[4 * 3] = {
+            camX - perp.x * r, 0.0f, camZ - perp.y * r,
+            camX + perp.x * r, 0.0f, camZ + perp.y * r,
+            camX,              0.0f, camZ,
+            camX + f2dbg.x * r, 0.0f, camZ + f2dbg.y * r,
+        };
+
+        glBindVertexArray(g_borderVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, g_borderVBO);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(lineVerts), lineVerts);
+
+        glUseProgram(solidColorProgram);
+        const GLint loc = glGetUniformLocation(solidColorProgram, "uMVP");
+        glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvpMini));
+        glDrawArrays(GL_LINES, 0, 4);
+        glBindVertexArray(0);
+        glUseProgram(0);
+
+        if (depthEnabledBefore) glEnable(GL_DEPTH_TEST);
+    }
 
     // Shared MVP for HUD map rendering (marker + borders).
 
@@ -523,8 +559,6 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
     if (showFullMap && haveChunkBounds && solidColorProgram && g_borderVAO) {
         GLboolean depthEnabledBefore = glIsEnabled(GL_DEPTH_TEST);
         if (depthEnabledBefore) glDisable(GL_DEPTH_TEST);
-        GLboolean cullEnabledBefore = glIsEnabled(GL_CULL_FACE);
-        if (cullEnabledBefore) glDisable(GL_CULL_FACE);
 
         // Build a border with a fixed pixel thickness.
         // Using quads avoids line rasterization edge cases.
@@ -560,7 +594,6 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
         const float iy1 = ndcMaxY - ty * 0.5f;
 
         if (!(ix0 < ix1 && iy0 < iy1)) {
-            if (cullEnabledBefore) glEnable(GL_CULL_FACE);
             if (depthEnabledBefore) glEnable(GL_DEPTH_TEST);
             // Skip border if the chunk rect is too small / degenerate.
             glClearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]);
@@ -619,7 +652,6 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
         glBindVertexArray(0);
         glUseProgram(0);
 
-        if (cullEnabledBefore) glEnable(GL_CULL_FACE);
         if (depthEnabledBefore) glEnable(GL_DEPTH_TEST);
     }
 

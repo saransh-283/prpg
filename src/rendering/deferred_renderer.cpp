@@ -280,14 +280,11 @@ namespace DeferredRenderer {
         glClear(GL_DEPTH_BUFFER_BIT);
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
-        // Front-face culling reduces shadow acne for shadow maps.
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_FRONT);
+        // Front-face/backface culling removed (no GL_CULL_FACE changes)
     }
 
     void EndShadowPass() {
-        glCullFace(GL_BACK);
-        glDisable(GL_CULL_FACE);
+        // Restored default behavior; no explicit culling state changes
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 

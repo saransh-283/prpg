@@ -1,7 +1,6 @@
 #include "terrain.h"
 
-#include <utils/frustum/frustum.h>
-#include <utils/occlusion/occlusion_culler.h>
+#include <algorithm>
 #include <vector>
 #include <unordered_map>
 #include <cmath>
@@ -102,8 +101,7 @@ static std::unordered_map<long long, Chunk> g_chunks;
 static noise::module::Perlin g_perlin;
 static int g_chunkSize = 128; // vertices per side
 
-// Hardware occlusion culler – skips fully-hidden chunks using previous-frame query results.
-static OcclusionCuller g_occlusionCuller;
+// Terrain generation parameters
 static float g_scale = 0.5f; // spacing between vertices (larger to make terrain more planar)
 static int g_viewRadius = 3; // generate chunks within this radius
 // terrain height scaling to reduce steepness
@@ -169,7 +167,6 @@ bool InitTerrain() {
 
     g_perlin.SetSeed(world.value("perlin_seed", 1337));
     g_perlin.SetFrequency(g_heightFrequency);
-    g_occlusionCuller.InitProxyMesh();
     StartChunkWorker();
     return true;
 }
@@ -1206,7 +1203,6 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
 
 void CleanupTerrain() {
     StopChunkWorker();
-    g_occlusionCuller.Cleanup();
     for (auto& kv : g_chunks) {
         destroyChunk(kv.second);
     }
@@ -1220,8 +1216,23 @@ static float ChunkDistSq(const Chunk& c, const glm::vec3& cam) {
     return glm::dot(d, d);
 }
 
-// Render a single chunk's full geometry (terrain + roads + buildings etc.).
-static void DrawChunkGeometry(const Chunk& c, GLint modelLoc, GLint colorLoc) {
+// True if the chunk center lies in the camera's front semicircle in the XZ plane.
+static bool IsChunkInFrontSemicircleXZ(const Chunk& c, const glm::vec3& cameraPos, const glm::vec3& cameraFront) {
+    const glm::vec2 forward2(cameraFront.x, cameraFront.z);
+    const float fLen2 = glm::dot(forward2, forward2);
+    if (fLen2 < 1e-8f) return true;
+    const glm::vec2 f = forward2 / std::sqrt(fLen2);
+
+    const glm::vec3 center3 = (c.aabb.min + c.aabb.max) * 0.5f;
+    const glm::vec2 to2(center3.x - cameraPos.x, center3.z - cameraPos.z);
+    const float tLen2 = glm::dot(to2, to2);
+    if (tLen2 < 1e-8f) return true;
+
+    return glm::dot(f, to2) >= 0.0f;
+}
+
+// Render a single chunk's geometry. Terrain/roads are always drawn; buildings can be skipped.
+static void DrawChunkGeometry(const Chunk& c, GLint modelLoc, GLint colorLoc, bool drawBuildings) {
     glm::mat4 model = glm::mat4(1.0f);
     glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
 
@@ -1249,7 +1260,7 @@ static void DrawChunkGeometry(const Chunk& c, GLint modelLoc, GLint colorLoc) {
         glBindVertexArray(c.streetVAO);
         glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
     }
-    if (c.buildingVAO != 0 && c.buildingIndexCount > 0) {
+    if (drawBuildings && c.buildingVAO != 0 && c.buildingIndexCount > 0) {
         const auto& buildingParams = CoreParams::GetBuildingParams();
         glUniform3f(colorLoc, buildingParams.value("color_r", 180) / 255.0f, buildingParams.value("color_g", 180) / 255.0f, buildingParams.value("color_b", 180) / 255.0f);
         glBindVertexArray(c.buildingVAO);
@@ -1257,14 +1268,14 @@ static void DrawChunkGeometry(const Chunk& c, GLint modelLoc, GLint colorLoc) {
     }
 }
 
-// Render terrain to G-buffer for deferred rendering
-void RenderTerrainToGBuffer(GLuint geometryShader, const glm::mat4& proj, const glm::mat4& view, const Frustum& frustum) {
+// Render terrain to G-buffer for deferred rendering.
+// Preprocessing: skip buildings for chunks outside the front semicircle.
+void RenderTerrainToGBuffer(GLuint geometryShader,
+                            const glm::mat4& proj,
+                            const glm::mat4& view,
+                            const glm::vec3& cameraPos,
+                            const glm::vec3& cameraFront) {
     if (geometryShader == 0) return;
-
-    // ── Collect previous-frame occlusion query results ──
-    if (CoreParams::GetRenderingCullingParams().value("occlusion_enabled", true)) {
-        g_occlusionCuller.BeginFrame();
-    }
 
     glUseProgram(geometryShader);
 
@@ -1276,73 +1287,21 @@ void RenderTerrainToGBuffer(GLuint geometryShader, const glm::mat4& proj, const 
     glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
     glUniformMatrix4fv(projLoc, 1, GL_FALSE, glm::value_ptr(proj));
 
-    // ── Extract camera world-space position from the view matrix ──
-    const glm::mat4 invView = glm::inverse(view);
-    const glm::vec3 cameraPos(invView[3]);
-
-    // Determine camera chunk coordinates for nearby-chunk exemption.
-    int camCx, camCz;
-    WorldToChunk(cameraPos.x, cameraPos.z, camCx, camCz);
-
-    // ── Build a frustum-visible list and sort front-to-back ──
-    // Front-to-back order is essential: closer chunks populate the depth
-    // buffer first so farther chunks' occlusion queries are accurate.
-    struct ChunkRef {
-        long long key;
-        Chunk*    chunk;
-        float     distSq;
-        bool      nearby; // exempt from occlusion culling
-    };
-    std::vector<ChunkRef> visible;
-    visible.reserve(g_chunks.size());
-
     for (auto& kv : g_chunks) {
-        Chunk& c = kv.second;
-        if (!frustum.TestAABB(c.aabb)) continue;
-
-        const bool nearby = (std::abs(c.cx - camCx) <= 1 && std::abs(c.cz - camCz) <= 1);
-        visible.push_back({ kv.first, &c, ChunkDistSq(c, cameraPos), nearby });
-    }
-
-    std::sort(visible.begin(), visible.end(),
-              [](const ChunkRef& a, const ChunkRef& b) { return a.distSq < b.distSq; });
-
-    // ── Render pass ──
-    for (const auto& ref : visible) {
-        const Chunk& c   = *ref.chunk;
-        const long long chunkKey = ref.key;
-
-        // Nearby chunks (camera chunk + immediate neighbours) are NEVER
-        // occlusion-culled to prevent the player's surroundings from popping.
-        const bool canOcclude = CoreParams::GetRenderingCullingParams().value("occlusion_enabled", true) && !ref.nearby;
-
-        // ── Occlusion cull (previous-frame result) ──
-        if (canOcclude && !g_occlusionCuller.IsChunkVisible(chunkKey)) {
-            // Draw a query-only AABB proxy (no depth/colour writes) so the
-            // chunk can recover to visible when the camera moves.
-            g_occlusionCuller.BeginQuery(chunkKey);
-            g_occlusionCuller.DrawAABBProxy(c.aabb, modelLoc);
-            g_occlusionCuller.EndQuery();
-            continue;
-        }
-
-        // ── Render full chunk geometry (inside a query when enabled) ──
-        if (canOcclude) g_occlusionCuller.BeginQuery(chunkKey);
-
-        DrawChunkGeometry(c, modelLoc, colorLoc);
-
-        if (canOcclude) g_occlusionCuller.EndQuery();
+        const Chunk& c = kv.second;
+        const bool front = IsChunkInFrontSemicircleXZ(c, cameraPos, cameraFront);
+        DrawChunkGeometry(c, modelLoc, colorLoc, /*drawBuildings=*/front);
     }
 
     glBindVertexArray(0);
-
-    if (CoreParams::GetRenderingCullingParams().value("occlusion_enabled", true)) {
-        g_occlusionCuller.EndFrame();
-    }
 }
 
-// Render terrain to shadow map
-void RenderTerrainToShadowMap(GLuint shadowShader, const glm::mat4& lightSpaceMatrix) {
+// Render terrain to shadow map.
+// Same preprocessing rule as the G-buffer pass.
+void RenderTerrainToShadowMap(GLuint shadowShader,
+                              const glm::mat4& lightSpaceMatrix,
+                              const glm::vec3& cameraPos,
+                              const glm::vec3& cameraFront) {
     if (shadowShader == 0) return;
 
     glUseProgram(shadowShader);
@@ -1354,6 +1313,7 @@ void RenderTerrainToShadowMap(GLuint shadowShader, const glm::mat4& lightSpaceMa
 
     for (auto& kv : g_chunks) {
         Chunk& c = kv.second;
+        const bool front = IsChunkInFrontSemicircleXZ(c, cameraPos, cameraFront);
         glm::mat4 model = glm::mat4(1.0f);
         glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
 
@@ -1378,7 +1338,7 @@ void RenderTerrainToShadowMap(GLuint shadowShader, const glm::mat4& lightSpaceMa
             glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
         }
         
-        if (c.buildingVAO != 0 && c.buildingIndexCount > 0) {
+        if (front && c.buildingVAO != 0 && c.buildingIndexCount > 0) {
             glBindVertexArray(c.buildingVAO);
             glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
         }

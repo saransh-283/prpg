@@ -11,7 +11,6 @@
 #include <unordered_set>
 
 #include <assets/objects/models/3d/custom/mesh.h>
-#include <utils/frustum/frustum.h>
 
 class NpcSystem {
 public:
@@ -25,8 +24,15 @@ public:
     // Safe to call multiple times; subsequent calls for the same chunk are ignored.
     void SpawnForChunk(int cx, int cz);
 
-    void RenderToGBuffer(GLuint geometryShader, const glm::mat4& proj, const glm::mat4& view, const Frustum& frustum) const;
-    void RenderToShadowMap(GLuint shadowShader, const glm::mat4& lightSpaceMatrix) const;
+    void RenderToGBuffer(GLuint geometryShader,
+                         const glm::mat4& proj,
+                         const glm::mat4& view,
+                         const glm::vec3& cameraPos,
+                         const glm::vec3& cameraFront) const;
+    void RenderToShadowMap(GLuint shadowShader,
+                           const glm::mat4& lightSpaceMatrix,
+                           const glm::vec3& cameraPos,
+                           const glm::vec3& cameraFront) const;
 
     // HUD: render NPC name labels in screen-space (not affected by lighting).
     // Labels are shown only when the player is close enough.
@@ -84,7 +90,11 @@ private:
     void GenerateDeterministicSpawns(const glm::vec3& spawnCenter);
     void GenerateDeterministicSpawnsForChunk(int cx, int cz);
 
-    void RenderInstancesCommon(GLuint shaderProgram, int modelLoc, const glm::mat4& baseModel, const Frustum* frustum) const;
+    void RenderInstancesCommon(GLuint shaderProgram,
+                               int modelLoc,
+                               const glm::mat4& baseModel,
+                               const glm::vec3& cameraPos,
+                               const glm::vec3& cameraFront) const;
 
     // ── Name-generation bookkeeping ──────────────────────────────────────
 

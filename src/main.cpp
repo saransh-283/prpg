@@ -35,8 +35,7 @@
 // Deferred renderer and skybox
 #include <rendering/deferred_renderer.h>
 #include <rendering/skybox.h>
-// Frustum culling
-#include <utils/frustum/frustum.h>
+// Frustum culling removed
 
 namespace {
 volatile std::sig_atomic_t g_terminateRequested = 0;
@@ -600,8 +599,7 @@ int main(int argc, char *argv[])
         glm::vec3 cameraUp = player.GetUp();
         glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
 
-        // Build frustum for culling.
-        Frustum frustum(proj * view);
+        // Frustum culling removed
 
         // Update terrain generation around camera
         UpdateTerrain(cameraPos);
@@ -612,7 +610,7 @@ int main(int argc, char *argv[])
             glViewport(0, 0, windowW, windowH);
             glEnable(GL_DEPTH_TEST);
             glDisable(GL_BLEND);
-            glDisable(GL_CULL_FACE);
+            // Culling disabled logic removed
 
             // A brighter background helps readability when we skip the skybox.
             glClearColor(0.62f, 0.74f, 0.92f, 1.0f);
@@ -620,8 +618,8 @@ int main(int argc, char *argv[])
 
             // Render scene geometry directly with an unlit shader.
             const GLuint wf = wireframeProgram ? wireframeProgram : DeferredRenderer::GetGeometryShader();
-            RenderTerrainToGBuffer(wf, proj, view, frustum);
-            npcSystem.RenderToGBuffer(wf, proj, view, frustum);
+            RenderTerrainToGBuffer(wf, proj, view, cameraPos, cameraFront);
+            npcSystem.RenderToGBuffer(wf, proj, view, cameraPos, cameraFront);
         } else {
             // Restore default clear color; skybox will cover anyway.
             glClearColor(0.1f, 0.1f, 0.12f, 1.0f);
@@ -629,16 +627,16 @@ int main(int argc, char *argv[])
             // === SHADOW PASS ===
             DeferredRenderer::BeginShadowPass();
             glm::mat4 lightSpaceMatrix = DeferredRenderer::GetLightSpaceMatrix();
-            RenderTerrainToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix);
-            npcSystem.RenderToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix);
+            RenderTerrainToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix, cameraPos, cameraFront);
+            npcSystem.RenderToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix, cameraPos, cameraFront);
             DeferredRenderer::EndShadowPass();
 
             // === GEOMETRY PASS (render to G-buffer) ===
             DeferredRenderer::BeginGeometryPass();
 
             // Render world geometry to G-buffer
-            RenderTerrainToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view, frustum);
-            npcSystem.RenderToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view, frustum);
+            RenderTerrainToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view, cameraPos, cameraFront);
+            npcSystem.RenderToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view, cameraPos, cameraFront);
 
             DeferredRenderer::EndGeometryPass();
 
@@ -686,6 +684,7 @@ int main(int argc, char *argv[])
                           mapRoadsShader,
                           mapStreetsShader,
                           mapBuildingsShader,
+                          IsDebugOverlayVisible(),
                           true,
                           glm::vec2(0.0f));
             } else {
@@ -697,6 +696,7 @@ int main(int argc, char *argv[])
                           mapRoadsShader,
                           mapStreetsShader,
                           mapBuildingsShader,
+                          IsDebugOverlayVisible(),
                           false,
                           glm::vec2(0.0f));
             }

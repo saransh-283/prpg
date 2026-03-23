@@ -1,8 +1,4 @@
 {
-  "backface_enabled": true,
-  "occlusion_enabled": true
-}
-{
-  "backface_enabled": true,
-  "occlusion_enabled": true
+  "backface_enabled": false,
+  "occlusion_enabled": false
 }
