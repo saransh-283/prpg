@@ -8,13 +8,3 @@
   "ground_g": 0.26,
   "ground_b": 0.28
 }
-{
-  "intensity": 0.55,
-  "min": 0.08,
-  "sky_r": 0.62,
-  "sky_g": 0.74,
-  "sky_b": 0.92,
-  "ground_r": 0.26,
-  "ground_g": 0.26,
-  "ground_b": 0.28
-}

@@ -1,8 +1,8 @@
 #version 330 core
 
 out vec4 FragColor;
+uniform vec3 uColor;
 
 void main() {
-    // Roads
-    FragColor = vec4(0.75, 0.75, 0.78, 1.0);
+    FragColor = vec4(uColor, 1.0);
 }

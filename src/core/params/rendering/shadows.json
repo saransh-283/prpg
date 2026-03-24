@@ -1,9 +1,3 @@
 {
   "strength": 0.45
 }
-{
-  "strength": 0.45,
-  "shadow_map_resolution": 4096,
-  "shadow_distance": 100.0,
-  "shadow_bias": 0.0005
-}

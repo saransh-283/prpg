@@ -31,8 +31,8 @@ public:
                          const glm::vec3& cameraFront) const;
     void RenderToShadowMap(GLuint shadowShader,
                            const glm::mat4& lightSpaceMatrix,
-                           const glm::vec3& cameraPos,
-                           const glm::vec3& cameraFront) const;
+                           const glm::mat4& proj,
+                           const glm::mat4& view) const;
 
     // HUD: render NPC name labels in screen-space (not affected by lighting).
     // Labels are shown only when the player is close enough.
@@ -93,8 +93,7 @@ private:
     void RenderInstancesCommon(GLuint shaderProgram,
                                int modelLoc,
                                const glm::mat4& baseModel,
-                               const glm::vec3& cameraPos,
-                               const glm::vec3& cameraFront) const;
+                               const glm::mat4& viewProj) const;
 
     // ── Name-generation bookkeeping ──────────────────────────────────────
 

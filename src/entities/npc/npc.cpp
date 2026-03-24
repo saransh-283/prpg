@@ -9,6 +9,8 @@
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <utils/frustum/frustum.h>
+
 #include <nlohmann/json.hpp>
 
 #include <fstream>
@@ -447,18 +449,23 @@ void NpcSystem::RenderNameLabels(const glm::vec3& playerPos, const glm::mat4& pr
 void NpcSystem::RenderInstancesCommon(GLuint shaderProgram,
                                       int modelLoc,
                                       const glm::mat4& baseModel,
-                                      const glm::vec3& cameraPos,
-                                      const glm::vec3& cameraFront) const {
+                                      const glm::mat4& viewProj) const {
     if (!meshLoaded) return;
 
-    const glm::vec2 forward2(cameraFront.x, cameraFront.z);
-    const float fLen2 = glm::dot(forward2, forward2);
-    const glm::vec2 f = (fLen2 < 1e-8f) ? glm::vec2(0.0f, 1.0f) : (forward2 / std::sqrt(fLen2));
+    const FrustumUtil::Frustum frustum = FrustumUtil::ExtractFrustum(viewProj);
+
+    float localRadius = 0.55f;
+    if (mesh.hasAabb) {
+        const glm::vec3 ext = (mesh.aabbMax - mesh.aabbMin) * 0.5f;
+        localRadius = glm::length(ext);
+    }
+
+    // Matches the base model used in the render passes.
+    constexpr float kBaseUniformScale = 0.22f;
 
     for (const auto& npc : npcs) {
-        // Preprocessing: skip NPCs behind the camera in the XZ plane.
-        const glm::vec2 to2(npc.position.x - cameraPos.x, npc.position.z - cameraPos.z);
-        if (glm::dot(f, to2) < 0.0f) {
+        const float r = localRadius * kBaseUniformScale * std::max(npc.widthScale, npc.heightScale);
+        if (!FrustumUtil::IntersectsSphere(frustum, npc.position, r)) {
             continue;
         }
         // Important: translate first, then apply baseModel so scaling/rotation don't affect the translation.
@@ -501,13 +508,15 @@ void NpcSystem::RenderToGBuffer(GLuint geometryShader,
     baseModel = glm::rotate(baseModel, glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
     baseModel = glm::scale(baseModel, glm::vec3(0.22f));
 
-    RenderInstancesCommon(geometryShader, modelLoc, baseModel, cameraPos, cameraFront);
+    (void)cameraPos;
+    (void)cameraFront;
+    RenderInstancesCommon(geometryShader, modelLoc, baseModel, proj * view);
 }
 
 void NpcSystem::RenderToShadowMap(GLuint shadowShader,
                                   const glm::mat4& lightSpaceMatrix,
-                                  const glm::vec3& cameraPos,
-                                  const glm::vec3& cameraFront) const {
+                                  const glm::mat4& proj,
+                                  const glm::mat4& view) const {
     if (!meshLoaded || shadowShader == 0) return;
 
     glUseProgram(shadowShader);
@@ -521,27 +530,7 @@ void NpcSystem::RenderToShadowMap(GLuint shadowShader,
     baseModel = glm::rotate(baseModel, glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
     baseModel = glm::scale(baseModel, glm::vec3(0.22f));
 
-    const glm::vec2 forward2(cameraFront.x, cameraFront.z);
-    const float fLen2 = glm::dot(forward2, forward2);
-    const glm::vec2 f = (fLen2 < 1e-8f) ? glm::vec2(0.0f, 1.0f) : (forward2 / std::sqrt(fLen2));
-
-    for (const auto& npc : npcs) {
-        const glm::vec2 to2(npc.position.x - cameraPos.x, npc.position.z - cameraPos.z);
-        if (glm::dot(f, to2) < 0.0f) {
-            continue;
-        }
-        glm::mat4 model(1.0f);
-        model = glm::translate(model, npc.position);
-        model *= baseModel;
-        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
-
-        for (const auto& tri : mesh.triangles) {
-            glBindVertexArray(tri.VAO);
-            glDrawArrays(GL_TRIANGLES, 0, tri.vertexCount);
-        }
-    }
-
-    glBindVertexArray(0);
+    RenderInstancesCommon(shadowShader, modelLoc, baseModel, proj * view);
 }
 
 bool NpcSystem::CollidesXZ(float x, float z, float radius) const {

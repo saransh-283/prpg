@@ -627,8 +627,8 @@ int main(int argc, char *argv[])
             // === SHADOW PASS ===
             DeferredRenderer::BeginShadowPass();
             glm::mat4 lightSpaceMatrix = DeferredRenderer::GetLightSpaceMatrix();
-            RenderTerrainToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix, cameraPos, cameraFront);
-            npcSystem.RenderToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix, cameraPos, cameraFront);
+            RenderTerrainToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix, proj, view);
+            npcSystem.RenderToShadowMap(DeferredRenderer::GetShadowShader(), lightSpaceMatrix, proj, view);
             DeferredRenderer::EndShadowPass();
 
             // === GEOMETRY PASS (render to G-buffer) ===
@@ -676,7 +676,7 @@ int main(int argc, char *argv[])
                 glm::vec2 mapOffset(0.0f, 0.0f);
                 // We need to track the offset, so we'll pass it through the state
                 // The offset is already tracked internally in map.cpp
-                RenderMap(cameraPos, cameraFront, windowW, windowH,
+                RenderMap(cameraPos, cameraFront, proj, windowW, windowH,
                           mapBorderShader,
                           markerSdfProgram,
                           0,
@@ -688,7 +688,7 @@ int main(int argc, char *argv[])
                           true,
                           glm::vec2(0.0f));
             } else {
-                RenderMap(cameraPos, cameraFront, windowW, windowH,
+                RenderMap(cameraPos, cameraFront, proj, windowW, windowH,
                           mapBorderShader,
                           markerSdfProgram,
                           0,

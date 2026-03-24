@@ -32,18 +32,18 @@ void UpdateTerrain(const glm::vec3& cameraPos);
 void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsProgram, GLuint streetsProgram, GLuint buildingsProgram, const glm::mat4& proj, const glm::mat4& view);
 
 // Render terrain to G-buffer (deferred rendering).
-// Preprocessing: buildings are skipped for chunks outside the front semicircle.
+// Preprocessing: buildings are skipped for chunks outside the camera view frustum.
 void RenderTerrainToGBuffer(GLuint geometryShader,
                             const glm::mat4& proj,
                             const glm::mat4& view,
                             const glm::vec3& cameraPos,
                             const glm::vec3& cameraFront);
 
-// Render terrain to shadow map (same front-semicircle building filter).
+// Render terrain to shadow map (same camera-frustum building filter).
 void RenderTerrainToShadowMap(GLuint shadowShader,
                               const glm::mat4& lightSpaceMatrix,
-                              const glm::vec3& cameraPos,
-                              const glm::vec3& cameraFront);
+                              const glm::mat4& proj,
+                              const glm::mat4& view);
 
 // Cleanup GPU resources used by terrain
 void CleanupTerrain();

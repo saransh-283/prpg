@@ -6,6 +6,8 @@
 #include <cmath>
 #include <noise/noise.h>
 #include <glm/gtc/type_ptr.hpp>
+
+#include <utils/frustum/frustum.h>
 #include <glm/glm.hpp>
 #include <world/roads/roads.h>
 #include <world/highways/highways.h>
@@ -1216,21 +1218,6 @@ static float ChunkDistSq(const Chunk& c, const glm::vec3& cam) {
     return glm::dot(d, d);
 }
 
-// True if the chunk center lies in the camera's front semicircle in the XZ plane.
-static bool IsChunkInFrontSemicircleXZ(const Chunk& c, const glm::vec3& cameraPos, const glm::vec3& cameraFront) {
-    const glm::vec2 forward2(cameraFront.x, cameraFront.z);
-    const float fLen2 = glm::dot(forward2, forward2);
-    if (fLen2 < 1e-8f) return true;
-    const glm::vec2 f = forward2 / std::sqrt(fLen2);
-
-    const glm::vec3 center3 = (c.aabb.min + c.aabb.max) * 0.5f;
-    const glm::vec2 to2(center3.x - cameraPos.x, center3.z - cameraPos.z);
-    const float tLen2 = glm::dot(to2, to2);
-    if (tLen2 < 1e-8f) return true;
-
-    return glm::dot(f, to2) >= 0.0f;
-}
-
 // Render a single chunk's geometry. Terrain/roads are always drawn; buildings can be skipped.
 static void DrawChunkGeometry(const Chunk& c, GLint modelLoc, GLint colorLoc, bool drawBuildings) {
     glm::mat4 model = glm::mat4(1.0f);
@@ -1269,7 +1256,7 @@ static void DrawChunkGeometry(const Chunk& c, GLint modelLoc, GLint colorLoc, bo
 }
 
 // Render terrain to G-buffer for deferred rendering.
-// Preprocessing: skip buildings for chunks outside the front semicircle.
+// Preprocessing: skip buildings for chunks outside the camera view frustum.
 void RenderTerrainToGBuffer(GLuint geometryShader,
                             const glm::mat4& proj,
                             const glm::mat4& view,
@@ -1287,21 +1274,25 @@ void RenderTerrainToGBuffer(GLuint geometryShader,
     glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
     glUniformMatrix4fv(projLoc, 1, GL_FALSE, glm::value_ptr(proj));
 
+    const FrustumUtil::Frustum frustum = FrustumUtil::ExtractFrustum(proj * view);
+
     for (auto& kv : g_chunks) {
         const Chunk& c = kv.second;
-        const bool front = IsChunkInFrontSemicircleXZ(c, cameraPos, cameraFront);
-        DrawChunkGeometry(c, modelLoc, colorLoc, /*drawBuildings=*/front);
+        (void)cameraPos;
+        (void)cameraFront;
+        const bool visible = FrustumUtil::IntersectsAabb(frustum, c.aabb.min, c.aabb.max);
+        DrawChunkGeometry(c, modelLoc, colorLoc, /*drawBuildings=*/visible);
     }
 
     glBindVertexArray(0);
 }
 
 // Render terrain to shadow map.
-// Same preprocessing rule as the G-buffer pass.
+// Same preprocessing rule as the G-buffer pass (camera frustum-based building visibility).
 void RenderTerrainToShadowMap(GLuint shadowShader,
                               const glm::mat4& lightSpaceMatrix,
-                              const glm::vec3& cameraPos,
-                              const glm::vec3& cameraFront) {
+                              const glm::mat4& proj,
+                              const glm::mat4& view) {
     if (shadowShader == 0) return;
 
     glUseProgram(shadowShader);
@@ -1311,9 +1302,11 @@ void RenderTerrainToShadowMap(GLuint shadowShader,
     
     glUniformMatrix4fv(lightSpaceLoc, 1, GL_FALSE, glm::value_ptr(lightSpaceMatrix));
 
+    const FrustumUtil::Frustum frustum = FrustumUtil::ExtractFrustum(proj * view);
+
     for (auto& kv : g_chunks) {
         Chunk& c = kv.second;
-        const bool front = IsChunkInFrontSemicircleXZ(c, cameraPos, cameraFront);
+        const bool visible = FrustumUtil::IntersectsAabb(frustum, c.aabb.min, c.aabb.max);
         glm::mat4 model = glm::mat4(1.0f);
         glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
 
@@ -1338,7 +1331,7 @@ void RenderTerrainToShadowMap(GLuint shadowShader,
             glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
         }
         
-        if (front && c.buildingVAO != 0 && c.buildingIndexCount > 0) {
+        if (visible && c.buildingVAO != 0 && c.buildingIndexCount > 0) {
             glBindVertexArray(c.buildingVAO);
             glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
         }

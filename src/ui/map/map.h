@@ -8,7 +8,7 @@ bool InitMap();
 
 // Render map given camera position, window size, marker shader and per-layer shaders
 // Supports both small corner map and full-screen map mode
-void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int windowW, int windowH,
+void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, const glm::mat4& proj, int windowW, int windowH,
                GLuint solidColorProgram,
                GLuint markerSdfProgram,
                GLuint terrainProgram,

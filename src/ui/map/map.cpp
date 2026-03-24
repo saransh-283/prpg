@@ -157,7 +157,7 @@ float GetMapZoom() {
     return g_mapZoom;
 }
 
-void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int windowW, int windowH,
+void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, const glm::mat4& proj, int windowW, int windowH,
                    GLuint solidColorProgram,
                    GLuint markerSdfProgram,
                    GLuint terrainProgram,
@@ -179,6 +179,39 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
     float worldRadius;
     
     const json& uj = CoreParams::GetUiMapParams();
+
+    // Player facing yaw (used to rotate the minimap background while keeping the marker locked).
+    // Project facing direction onto XZ plane.
+    const glm::vec2 f2 = SafeNormalize2(glm::vec2(cameraFront.x, cameraFront.z), glm::vec2(0.0f, 1.0f));
+    // yaw = angle from +Z toward +X
+    const float yaw = std::atan2(f2.x, f2.y);
+
+    // Match 3D world colors (see world/terrain/terrain.cpp RenderTerrain).
+    const auto& hwyParams = CoreParams::GetHighwayParams();
+    const glm::vec3 highwayColor(
+        hwyParams.value("color_r", 255) / 255.0f,
+        hwyParams.value("color_g", 0) / 255.0f,
+        hwyParams.value("color_b", 0) / 255.0f
+    );
+    const auto& roadParams = CoreParams::GetRoadParams();
+    const glm::vec3 roadColor(
+        roadParams.value("color_r", 255) / 255.0f,
+        roadParams.value("color_g", 255) / 255.0f,
+        roadParams.value("color_b", 0) / 255.0f
+    );
+    const auto& streetParams = CoreParams::GetStreetParams();
+    const glm::vec3 streetColor(
+        streetParams.value("color_r", 0) / 255.0f,
+        streetParams.value("color_g", 0) / 255.0f,
+        streetParams.value("color_b", 255) / 255.0f
+    );
+    const auto& buildingParams = CoreParams::GetBuildingParams();
+    const glm::vec3 buildingColor(
+        buildingParams.value("color_r", 180) / 255.0f,
+        buildingParams.value("color_g", 180) / 255.0f,
+        buildingParams.value("color_b", 180) / 255.0f
+    );
+
     if (showFullMap) {
         // Full screen map mode
         miniX = 0;
@@ -195,7 +228,8 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
         miniY = windowH - defaultSize - margin;
         miniW = defaultSize;
         miniH = defaultSize;
-        worldRadius = uj.value("world_radius", static_cast<float>(40.0f)) / g_mapZoom; // Apply zoom to minimap too
+        const float minimapRadiusMul = uj.value("minimap_world_radius_multiplier", static_cast<float>(1.5f));
+        worldRadius = (uj.value("world_radius", static_cast<float>(40.0f)) * minimapRadiusMul) / g_mapZoom; // Apply zoom to minimap too
     }
 
     glEnable(GL_SCISSOR_TEST);
@@ -229,8 +263,23 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
     (void)streetsProgram;
     (void)buildingsProgram;
 
+    // Base MVP used for HUD elements that should not rotate (e.g., player marker in minimap).
+    const glm::mat4 mvpMiniBase = projMini * viewMini;
+
     // Map MVP used by layer shaders (world-space -> clip-space in the minimap camera).
-    const glm::mat4 mvpMini = projMini * viewMini;
+    // For minimap: rotate the map background so player forward is "up".
+    glm::mat4 mvpMini = mvpMiniBase;
+    if (!showFullMap) {
+        const glm::mat4 t0 = glm::translate(glm::mat4(1.0f), glm::vec3(cx, 0.0f, cz));
+        // The minimap camera basis (top-down viewMini + ortho) results in a 180° flip
+        // relative to our yaw convention. Apply a +pi offset so the minimap shows
+        // the world in front of the player above the marker.
+        const float minimapYaw = -yaw + glm::pi<float>();
+        const glm::mat4 r = glm::rotate(glm::mat4(1.0f), minimapYaw, glm::vec3(0.0f, 1.0f, 0.0f));
+        const glm::mat4 t1 = glm::translate(glm::mat4(1.0f), glm::vec3(-cx, 0.0f, -cz));
+        const glm::mat4 modelRotateAboutCenter = t0 * r * t1;
+        mvpMini = mvpMiniBase * modelRotateAboutCenter;
+    }
 
     auto emitQuadXZ = [](std::vector<float>& out, float x0, float z0, float x1, float z1) {
         const float y = 0.0f;
@@ -399,25 +448,33 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
             if (it->second.highwayCount > 0 && highwaysProgram) {
                 glUseProgram(highwaysProgram);
                 const GLint loc = glGetUniformLocation(highwaysProgram, "uMVP");
+                const GLint colorLoc = glGetUniformLocation(highwaysProgram, "uColor");
                 glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvpMini));
+                if (colorLoc >= 0) glUniform3f(colorLoc, highwayColor.r, highwayColor.g, highwayColor.b);
                 glDrawArrays(GL_TRIANGLES, it->second.highwayFirst, it->second.highwayCount);
             }
             if (it->second.roadCount > 0 && roadsProgram) {
                 glUseProgram(roadsProgram);
                 const GLint loc = glGetUniformLocation(roadsProgram, "uMVP");
+                const GLint colorLoc = glGetUniformLocation(roadsProgram, "uColor");
                 glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvpMini));
+                if (colorLoc >= 0) glUniform3f(colorLoc, roadColor.r, roadColor.g, roadColor.b);
                 glDrawArrays(GL_TRIANGLES, it->second.roadFirst, it->second.roadCount);
             }
             if (it->second.streetCount > 0 && streetsProgram) {
                 glUseProgram(streetsProgram);
                 const GLint loc = glGetUniformLocation(streetsProgram, "uMVP");
+                const GLint colorLoc = glGetUniformLocation(streetsProgram, "uColor");
                 glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvpMini));
+                if (colorLoc >= 0) glUniform3f(colorLoc, streetColor.r, streetColor.g, streetColor.b);
                 glDrawArrays(GL_TRIANGLES, it->second.streetFirst, it->second.streetCount);
             }
             if (it->second.buildingCount > 0 && buildingsProgram) {
                 glUseProgram(buildingsProgram);
                 const GLint loc = glGetUniformLocation(buildingsProgram, "uMVP");
+                const GLint colorLoc = glGetUniformLocation(buildingsProgram, "uColor");
                 glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvpMini));
+                if (colorLoc >= 0) glUniform3f(colorLoc, buildingColor.r, buildingColor.g, buildingColor.b);
                 glDrawArrays(GL_TRIANGLES, it->second.buildingFirst, it->second.buildingCount);
             }
 
@@ -428,26 +485,37 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
     glUseProgram(0);
     if (depthWasEnabled) glEnable(GL_DEPTH_TEST);
 
-    // ── Debug: draw culling semicircle indicator ──────────────────────
-    // The "front semicircle" used by preprocessing is the XZ half-plane where
-    // dot(forwardXZ, toPointXZ) >= 0. The boundary is a line through the camera
-    // position, perpendicular to the forward direction.
+    // ── Debug: draw camera frustum indicator ─────────────────────────
+    // Show the camera view frustum in the XZ plane as a wedge (two edge rays)
+    // plus a forward direction ray. This matches the frustum-based preprocessing
+    // used to decide whether to draw expensive meshes (e.g., buildings).
     if (debugDrawCullingSemicircle && solidColorProgram && g_borderVAO && g_borderVBO) {
         GLboolean depthEnabledBefore = glIsEnabled(GL_DEPTH_TEST);
         if (depthEnabledBefore) glDisable(GL_DEPTH_TEST);
 
         const glm::vec2 f2dbg = SafeNormalize2(glm::vec2(cameraFront.x, cameraFront.z), glm::vec2(0.0f, 1.0f));
-        const glm::vec2 perp(-f2dbg.y, f2dbg.x);
+        const glm::vec2 right2 = SafeNormalize2(glm::vec2(f2dbg.y, -f2dbg.x), glm::vec2(1.0f, 0.0f));
+
+        // For a standard perspective projection, tan(fovX/2) == 1 / proj[0][0].
+        const float p00 = proj[0][0];
+        const float tanHalfFovX = (std::abs(p00) > 1e-8f) ? (1.0f / p00) : 1.0f;
+
+        const glm::vec2 leftDir = SafeNormalize2(f2dbg - right2 * tanHalfFovX, f2dbg);
+        const glm::vec2 rightDir = SafeNormalize2(f2dbg + right2 * tanHalfFovX, f2dbg);
         const float r = std::max(worldRadiusX, worldRadiusY) * 1.1f;
 
         const float camX = cameraPos.x;
         const float camZ = cameraPos.z;
 
-        // 2 lines (4 vertices): boundary line + forward direction line.
-        float lineVerts[4 * 3] = {
-            camX - perp.x * r, 0.0f, camZ - perp.y * r,
-            camX + perp.x * r, 0.0f, camZ + perp.y * r,
-            camX,              0.0f, camZ,
+        // 3 lines (6 vertices): left edge + right edge + forward direction.
+        float lineVerts[6 * 3] = {
+            camX, 0.0f, camZ,
+            camX + leftDir.x * r, 0.0f, camZ + leftDir.y * r,
+
+            camX, 0.0f, camZ,
+            camX + rightDir.x * r, 0.0f, camZ + rightDir.y * r,
+
+            camX, 0.0f, camZ,
             camX + f2dbg.x * r, 0.0f, camZ + f2dbg.y * r,
         };
 
@@ -458,7 +526,7 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
         glUseProgram(solidColorProgram);
         const GLint loc = glGetUniformLocation(solidColorProgram, "uMVP");
         glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvpMini));
-        glDrawArrays(GL_LINES, 0, 4);
+        glDrawArrays(GL_LINES, 0, 6);
         glBindVertexArray(0);
         glUseProgram(0);
 
@@ -477,12 +545,13 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
     float markerZ = cameraPos.z;
     float hy = SampleTerrainHeight(markerX, markerZ) + uj.value("marker_height_offset", static_cast<float>(50.0f));
 
-    // Project facing direction onto XZ plane.
-    glm::vec2 f2 = SafeNormalize2(glm::vec2(cameraFront.x, cameraFront.z), glm::vec2(0.0f, 1.0f));
-    // yaw = angle from +Z toward +X
-    float yaw = std::atan2(f2.x, f2.y);
-    float c = std::cos(yaw);
-    float sn = std::sin(yaw);
+    // For full map we keep the marker pointing in the facing direction.
+    // For minimap we lock marker orientation and rotate the map background instead.
+    // The SDF marker art is authored pointing "down" at zero rotation, so flip it 180°
+    // to make the locked minimap marker point "up".
+    const float markerYaw = showFullMap ? yaw : glm::pi<float>();
+    const float c = std::cos(markerYaw);
+    const float sn = std::sin(markerYaw);
 
     auto rotXZ = [&](float lx, float lz) -> glm::vec2 {
         // Rotate local (x,z) around Y by yaw
@@ -532,7 +601,8 @@ void RenderMap(const glm::vec3& cameraPos, const glm::vec3& cameraFront, int win
         GLint locMvp = glGetUniformLocation(markerSdfProgram, "uMVP");
         GLint locColor = glGetUniformLocation(markerSdfProgram, "uColor");
         GLint locSdf = glGetUniformLocation(markerSdfProgram, "uSDF");
-        glUniformMatrix4fv(locMvp, 1, GL_FALSE, glm::value_ptr(mvpMini));
+        const glm::mat4& mvpMarker = showFullMap ? mvpMini : mvpMiniBase;
+        glUniformMatrix4fv(locMvp, 1, GL_FALSE, glm::value_ptr(mvpMarker));
         glUniform3f(locColor, 1.0f, 0.1f, 0.1f);
 
         glActiveTexture(GL_TEXTURE0);

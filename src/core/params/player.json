@@ -3,5 +3,5 @@
   "move_speed": 15.0,
   "gravity": -9.81,
   "collision_radius": 0.45,
-  "eye_height": 2.0
+  "eye_height": 1.0
 }
