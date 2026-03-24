@@ -29,11 +29,19 @@ bool InitTerrain();
 void UpdateTerrain(const glm::vec3& cameraPos);
 
 // Render all generated terrain chunks using the provided shader programs and matrices
-void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsProgram, GLuint streetsProgram, GLuint buildingsProgram, const glm::mat4& proj, const glm::mat4& view);
+void RenderTerrain(GLuint terrainProgram,
+                   GLuint highwaysProgram,
+                   GLuint roadsProgram,
+                   GLuint streetsProgram,
+                   GLuint buildingsProgram,
+                   GLuint buildingWindowsProgram,
+                   const glm::mat4& proj,
+                   const glm::mat4& view);
 
 // Render terrain to G-buffer (deferred rendering).
 // Preprocessing: buildings are skipped for chunks outside the camera view frustum.
 void RenderTerrainToGBuffer(GLuint geometryShader,
+                            GLuint windowsGeometryShader,
                             const glm::mat4& proj,
                             const glm::mat4& view,
                             const glm::vec3& cameraPos,

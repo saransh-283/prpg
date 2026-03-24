@@ -20,6 +20,15 @@ static double deterministic_unit(int64_t a, int64_t b, int64_t c) {
     return static_cast<double>(h & ((1ULL << 53) - 1)) / static_cast<double>(1ULL << 53);
 }
 
+// Deterministic float in [0,1) from 4 integer inputs
+static double deterministic_unit(int64_t a, int64_t b, int64_t c, int64_t d) {
+    uint64_t h = static_cast<uint64_t>(a);
+    h = splitmix64(h ^ static_cast<uint64_t>(b));
+    h = splitmix64(h ^ static_cast<uint64_t>(c));
+    h = splitmix64(h ^ static_cast<uint64_t>(d));
+    return static_cast<double>(h & ((1ULL << 53) - 1)) / static_cast<double>(1ULL << 53);
+}
+
 // Generate a rectangular building shape
 static std::vector<glm::vec2> generate_rectangle_shape(int width, int height) {
     return {
@@ -104,6 +113,11 @@ static bool point_in_polygon(const glm::vec2& point, const std::vector<glm::vec2
     }
     
     return inside;
+}
+
+// Terrain-side uses a point-in-polygon that expects points in the same coordinate system.
+static bool pointInPolygon2D(const glm::vec2& point, const std::vector<glm::vec2>& polygon) {
+    return point_in_polygon(point, polygon);
 }
 
 // Try to place a building on the grid
@@ -328,3 +342,310 @@ std::vector<BuildingShape> generate_buildings_grid(std::vector<std::vector<int>>
     
     return buildings;
 }
+
+namespace BuildingsMesh {
+
+void BuildBuildingMeshesAndDoorsFromGrid(
+    int chunkCx,
+    int chunkCz,
+    int chunkSize,
+    const std::vector<std::vector<int>>& roadGrid,
+    const std::vector<BuildingShape>& buildings,
+    const std::vector<float>& terrainVertices,
+    std::vector<float>& outSolidVertices,
+    std::vector<unsigned int>& outSolidIndices,
+    std::vector<float>& outWindowVertices,
+    std::vector<unsigned int>& outWindowIndices,
+    std::vector<uint8_t>& outDoorMask) {
+
+    outSolidVertices.clear();
+    outSolidIndices.clear();
+    outWindowVertices.clear();
+    outWindowIndices.clear();
+
+    const int cellsPerChunk = chunkSize - 1;
+    if (cellsPerChunk <= 0) {
+        outDoorMask.clear();
+        return;
+    }
+
+    outDoorMask.assign(static_cast<size_t>(cellsPerChunk * cellsPerChunk), 0);
+
+    // Rasterize building heights and ownership (which BuildingShape owns each BUILDING cell).
+    std::vector<std::vector<float>> heightGrid(chunkSize, std::vector<float>(chunkSize, 0.0f));
+    std::vector<std::vector<int>> ownerGrid(chunkSize, std::vector<int>(chunkSize, -1));
+
+    auto cellType = [&](int x, int z) -> int {
+        if (z < 0 || z >= static_cast<int>(roadGrid.size())) return 0;
+        if (x < 0 || x >= static_cast<int>(roadGrid[z].size())) return 0;
+        return roadGrid[z][x];
+    };
+
+    for (int bi = 0; bi < static_cast<int>(buildings.size()); ++bi) {
+        const auto& building = buildings[bi];
+        if (building.points.size() < 3) continue;
+
+        float minX = building.points[0].x;
+        float maxX = building.points[0].x;
+        float minY = building.points[0].y;
+        float maxY = building.points[0].y;
+        for (const auto& p : building.points) {
+            minX = std::min(minX, p.x);
+            maxX = std::max(maxX, p.x);
+            minY = std::min(minY, p.y);
+            maxY = std::max(maxY, p.y);
+        }
+
+        int x0 = std::max(0, static_cast<int>(std::floor(minX)));
+        int x1 = std::min(chunkSize - 1, static_cast<int>(std::ceil(maxX)));
+        int z0 = std::max(0, static_cast<int>(std::floor(minY)));
+        int z1 = std::min(chunkSize - 1, static_cast<int>(std::ceil(maxY)));
+
+        for (int z = z0; z <= z1; ++z) {
+            for (int x = x0; x <= x1; ++x) {
+                if (cellType(x, z) != 4) continue; // BUILDING
+
+                glm::vec2 p(static_cast<float>(x) + 0.5f, static_cast<float>(z) + 0.5f);
+                if (!pointInPolygon2D(p, building.points)) continue;
+
+                if (building.height > heightGrid[z][x]) {
+                    heightGrid[z][x] = building.height;
+                    ownerGrid[z][x] = bi;
+                }
+            }
+        }
+    }
+
+    const auto& buildingParams = CoreParams::GetBuildingParams();
+    const auto& playerParams = CoreParams::GetPlayerParams();
+    const int seed = buildingParams.value("seed", 42);
+
+    // Facade cell sizing is driven by player height.
+    const float playerHeight = static_cast<float>(playerParams.value("eye_height", 1.6f));
+    const float facadeCellFactor = static_cast<float>(buildingParams.value("facade_cell_size_factor", 0.5f));
+    const float facadeCellSize = std::max(0.05f, facadeCellFactor * playerHeight);
+
+    // Door dimensions in facade cells.
+    const int doorCellsHigh = std::max(1, buildingParams.value("door_cells_high", 3));
+    const int doorCellsWide = std::max(1, buildingParams.value("door_cells_wide", 5));
+    const float doorHeight = static_cast<float>(doorCellsHigh) * facadeCellSize;
+
+    // Window probabilities (per facade cell).
+    const float windowProbUpper = buildingParams.value("window_probability", 0.18f);
+    const float windowProbGround = buildingParams.value("window_probability_ground", 0.03f);
+
+    // Pick one door edge per building, biased to edges adjacent to a road.
+    struct DoorCandidate { int x = 0; int z = 0; int dir = 0; };
+    std::vector<std::vector<DoorCandidate>> doorCandidates;
+    doorCandidates.resize(buildings.size());
+
+    for (int z = 0; z < cellsPerChunk; ++z) {
+        for (int x = 0; x < cellsPerChunk; ++x) {
+            if (cellType(x, z) != 4) continue; // BUILDING
+            const int bi = ownerGrid[z][x];
+            if (bi < 0) continue;
+
+            // N,S,W,E with neighbor cell types.
+            const int nx[4] = { x, x, x - 1, x + 1 };
+            const int nz[4] = { z - 1, z + 1, z, z };
+            for (int dir = 0; dir < 4; ++dir) {
+                const int t = cellType(nx[dir], nz[dir]);
+                if (t == 4) continue;
+                if (t == 1 || t == 2 || t == 3) { // HIGHWAY/ROAD/STREET
+                    doorCandidates[bi].push_back({x, z, dir});
+                }
+            }
+        }
+    }
+
+    auto isRoadLike = [&](int t) -> bool {
+        return t == 1 || t == 2 || t == 3;
+    };
+
+    auto isValidDoorCell = [&](int bi, int x, int z, int dir) -> bool {
+        if (x < 0 || z < 0 || x >= cellsPerChunk || z >= cellsPerChunk) return false;
+        if (cellType(x, z) != 4) return false;
+        if (ownerGrid[z][x] != bi) return false;
+
+        const int nx[4] = { x, x, x - 1, x + 1 };
+        const int nz[4] = { z - 1, z + 1, z, z };
+        const int t = cellType(nx[dir], nz[dir]);
+        return isRoadLike(t);
+    };
+
+    auto candidateSupportsWidth = [&](int bi, const DoorCandidate& dc) -> bool {
+        const int half = doorCellsWide / 2;
+        for (int off = -half; off <= half; ++off) {
+            int xx = dc.x;
+            int zz = dc.z;
+            if (dc.dir == 0 || dc.dir == 1) {
+                xx += off;
+            } else {
+                zz += off;
+            }
+            if (!isValidDoorCell(bi, xx, zz, dc.dir)) return false;
+        }
+        return true;
+    };
+
+    // Decide chosen door for each building deterministically (prefer candidates that can fit door width).
+    for (int bi = 0; bi < static_cast<int>(doorCandidates.size()); ++bi) {
+        auto& cands = doorCandidates[bi];
+        if (cands.empty()) continue;
+
+        std::vector<DoorCandidate> wideCands;
+        wideCands.reserve(cands.size());
+        for (const auto& dc : cands) {
+            if (candidateSupportsWidth(bi, dc)) wideCands.push_back(dc);
+        }
+
+        const auto& pickFrom = (!wideCands.empty()) ? wideCands : cands;
+        const double r = deterministic_unit(seed + 9001, chunkCx, chunkCz, bi);
+        const int idx = std::clamp(static_cast<int>(std::floor(r * pickFrom.size())), 0, static_cast<int>(pickFrom.size()) - 1);
+        const DoorCandidate dc = pickFrom[idx];
+
+        // Mark multiple adjacent boundary cells as door openings to achieve the requested width.
+        const int half = doorCellsWide / 2;
+        for (int off = -half; off <= half; ++off) {
+            int xx = dc.x;
+            int zz = dc.z;
+            if (dc.dir == 0 || dc.dir == 1) {
+                xx += off;
+            } else {
+                zz += off;
+            }
+
+            if (!isValidDoorCell(bi, xx, zz, dc.dir)) continue;
+
+            const int flatIdx = zz * cellsPerChunk + xx;
+            outDoorMask[static_cast<size_t>(flatIdx)] |= DoorBitForDir(dc.dir);
+        }
+    }
+
+    auto heightAt = [&](int x, int z) -> float {
+        if (x < 0 || z < 0 || x >= chunkSize || z >= chunkSize) return 0.0f;
+        if (cellType(x, z) != 4) return 0.0f;
+        float hh = heightGrid[z][x];
+        if (hh <= 0.0f) hh = buildingParams.value("road_min_height", 10.0f);
+        return hh;
+    };
+
+    enum class MeshKind { Solid, Windows };
+
+    auto pushVertex = [&](MeshKind mk, float x, float y, float z) {
+        auto& v = (mk == MeshKind::Solid) ? outSolidVertices : outWindowVertices;
+        v.push_back(x);
+        v.push_back(y);
+        v.push_back(z);
+    };
+
+    auto addQuad = [&](MeshKind mk, const glm::vec3& a, const glm::vec3& b, const glm::vec3& c_, const glm::vec3& d) {
+        auto& v = (mk == MeshKind::Solid) ? outSolidVertices : outWindowVertices;
+        auto& idx = (mk == MeshKind::Solid) ? outSolidIndices : outWindowIndices;
+        unsigned int baseIdx = static_cast<unsigned int>(v.size() / 3);
+        pushVertex(mk, a.x, a.y, a.z);
+        pushVertex(mk, b.x, b.y, b.z);
+        pushVertex(mk, c_.x, c_.y, c_.z);
+        pushVertex(mk, d.x, d.y, d.z);
+        idx.push_back(baseIdx + 0);
+        idx.push_back(baseIdx + 2);
+        idx.push_back(baseIdx + 1);
+        idx.push_back(baseIdx + 1);
+        idx.push_back(baseIdx + 2);
+        idx.push_back(baseIdx + 3);
+    };
+
+    auto isWindowForFacadeCell = [&](int cellX, int cellZ, int dir, int verticalCellIdx) -> bool {
+        const int globalCellX = chunkCx * cellsPerChunk + cellX;
+        const int globalCellZ = chunkCz * cellsPerChunk + cellZ;
+        const double r = deterministic_unit(seed + 1337 + dir * 19, globalCellX, globalCellZ, verticalCellIdx);
+        const float p = (verticalCellIdx == 0) ? windowProbGround : windowProbUpper;
+        return (r < p);
+    };
+
+    const float eps = 1e-4f;
+
+    for (int z = 0; z < cellsPerChunk; ++z) {
+        for (int x = 0; x < cellsPerChunk; ++x) {
+            if (cellType(x, z) != 4) continue;
+
+            float h = heightAt(x, z);
+            if (h <= 0.0f) continue;
+
+            const int i00 = (z + 0) * chunkSize + (x + 0);
+            const int i10 = (z + 0) * chunkSize + (x + 1);
+            const int i01 = (z + 1) * chunkSize + (x + 0);
+            const int i11 = (z + 1) * chunkSize + (x + 1);
+
+            glm::vec3 v00(terrainVertices[i00 * 3], terrainVertices[i00 * 3 + 1], terrainVertices[i00 * 3 + 2]);
+            glm::vec3 v10(terrainVertices[i10 * 3], terrainVertices[i10 * 3 + 1], terrainVertices[i10 * 3 + 2]);
+            glm::vec3 v01(terrainVertices[i01 * 3], terrainVertices[i01 * 3 + 1], terrainVertices[i01 * 3 + 2]);
+            glm::vec3 v11(terrainVertices[i11 * 3], terrainVertices[i11 * 3 + 1], terrainVertices[i11 * 3 + 2]);
+
+            // Floor: fill the gap where terrain mesh omits BUILDING cells.
+            {
+                constexpr float kFloorEpsY = 0.015f;
+                glm::vec3 f00(v00.x, v00.y + kFloorEpsY, v00.z);
+                glm::vec3 f10(v10.x, v10.y + kFloorEpsY, v10.z);
+                glm::vec3 f01(v01.x, v01.y + kFloorEpsY, v01.z);
+                glm::vec3 f11(v11.x, v11.y + kFloorEpsY, v11.z);
+                addQuad(MeshKind::Solid, f00, f10, f01, f11);
+            }
+
+            // Roof
+            glm::vec3 t00(v00.x, v00.y + h, v00.z);
+            glm::vec3 t10(v10.x, v10.y + h, v10.z);
+            glm::vec3 t01(v01.x, v01.y + h, v01.z);
+            glm::vec3 t11(v11.x, v11.y + h, v11.z);
+            addQuad(MeshKind::Solid, t00, t10, t01, t11);
+
+            auto emitFacade = [&](const glm::vec3& edgeA0, const glm::vec3& edgeB0, float neighborH, int dir, uint8_t doorBits) {
+                if (!(h > neighborH + eps)) return;
+
+                const float cellH = facadeCellSize;
+                if (cellH <= 0.01f) {
+                    glm::vec3 a(edgeA0.x, edgeA0.y + neighborH, edgeA0.z);
+                    glm::vec3 b(edgeB0.x, edgeB0.y + neighborH, edgeB0.z);
+                    glm::vec3 c(edgeA0.x, edgeA0.y + h, edgeA0.z);
+                    glm::vec3 d(edgeB0.x, edgeB0.y + h, edgeB0.z);
+                    addQuad(MeshKind::Solid, a, b, c, d);
+                    return;
+                }
+
+                const bool isDoorEdge = (doorBits & DoorBitForDir(dir)) != 0;
+
+                const float startY = std::max(0.0f, neighborH);
+                const int vCells = std::max(1, static_cast<int>(std::ceil((h - startY) / cellH)));
+                for (int vi = 0; vi < vCells; ++vi) {
+                    float sliceY0 = startY + static_cast<float>(vi) * cellH;
+                    float sliceY1 = std::min(startY + static_cast<float>(vi + 1) * cellH, h);
+                    if (sliceY1 <= sliceY0 + 1e-5f) continue;
+
+                    if (isDoorEdge && sliceY0 < doorHeight) {
+                        continue;
+                    }
+
+                    const bool isWindow = isWindowForFacadeCell(x, z, dir, vi);
+                    glm::vec3 a(edgeA0.x, edgeA0.y + sliceY0, edgeA0.z);
+                    glm::vec3 b(edgeB0.x, edgeB0.y + sliceY0, edgeB0.z);
+                    glm::vec3 c(edgeA0.x, edgeA0.y + sliceY1, edgeA0.z);
+                    glm::vec3 d(edgeB0.x, edgeB0.y + sliceY1, edgeB0.z);
+                    addQuad(isWindow ? MeshKind::Windows : MeshKind::Solid, a, b, c, d);
+                }
+            };
+
+            const uint8_t doorBits = outDoorMask[static_cast<size_t>(z * cellsPerChunk + x)];
+
+            // North
+            emitFacade(v00, v10, heightAt(x, z - 1), /*dir=*/0, doorBits);
+            // South
+            emitFacade(v01, v11, heightAt(x, z + 1), /*dir=*/1, doorBits);
+            // West
+            emitFacade(v00, v01, heightAt(x - 1, z), /*dir=*/2, doorBits);
+            // East
+            emitFacade(v10, v11, heightAt(x + 1, z), /*dir=*/3, doorBits);
+        }
+    }
+}
+
+} // namespace BuildingsMesh

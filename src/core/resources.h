@@ -51,6 +51,12 @@ namespace Shaders {
         constexpr const char* VERTEX = "src/assets/shaders/buildings/buildings.vert";
         constexpr const char* FRAGMENT = "src/assets/shaders/buildings/buildings.frag";
     }
+
+    // Building windows rendering (separate mesh + shader)
+    namespace BuildingWindows {
+        constexpr const char* VERTEX = "src/assets/shaders/buildings/windows.vert";
+        constexpr const char* FRAGMENT = "src/assets/shaders/buildings/windows.frag";
+    }
     
     // UI - Marker SDF
     namespace UI {
@@ -93,6 +99,12 @@ namespace Shaders {
         namespace Geometry {
             constexpr const char* VERTEX = "src/assets/shaders/deferred/geometry.vert";
             constexpr const char* FRAGMENT = "src/assets/shaders/deferred/geometry.frag";
+        }
+
+        // Windows geometry pass (same G-buffer outputs, separate program)
+        namespace GeometryWindows {
+            constexpr const char* VERTEX = "src/assets/shaders/deferred/geometry_windows.vert";
+            constexpr const char* FRAGMENT = "src/assets/shaders/deferred/geometry_windows.frag";
         }
         
         namespace Lighting {

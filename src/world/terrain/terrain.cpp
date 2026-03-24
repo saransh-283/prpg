@@ -4,6 +4,7 @@
 #include <vector>
 #include <unordered_map>
 #include <cmath>
+#include <cstdint>
 #include <noise/noise.h>
 #include <glm/gtc/type_ptr.hpp>
 
@@ -56,6 +57,12 @@ struct ChunkCpuData {
     std::vector<float> buildingMeshVertices;
     std::vector<unsigned int> buildingMeshIndices;
 
+    std::vector<float> buildingWindowMeshVertices;
+    std::vector<unsigned int> buildingWindowMeshIndices;
+
+    // Per building-cell door openings for collision (4-bit mask per cell: N,S,W,E).
+    std::vector<uint8_t> buildingDoorMask;
+
     std::vector<ChunkBlueprintInput> blueprints;
 };
 
@@ -77,11 +84,15 @@ struct Chunk {
     GLuint buildingVAO = 0;
     GLuint buildingVBO = 0;
     GLuint buildingEBO = 0;
+    GLuint buildingWindowsVAO = 0;
+    GLuint buildingWindowsVBO = 0;
+    GLuint buildingWindowsEBO = 0;
     int indexCount = 0;
     int highwayIndexCount = 0;
     int roadIndexCount = 0;
     int streetIndexCount = 0;
     int buildingIndexCount = 0;
+    int buildingWindowsIndexCount = 0;
     // store generated polyline data (vector of polylines)
     std::vector<std::vector<glm::vec2>> highwayPolylines;
     std::vector<std::vector<glm::vec2>> roadPolylines;
@@ -91,6 +102,9 @@ struct Chunk {
     // Building data
     std::vector<BuildingShape> buildings;
     std::vector<PolygonMesh> buildingPolygonMeshes;
+
+    // Per building-cell door openings for collision (4-bit mask per cell: N,S,W,E).
+    std::vector<uint8_t> buildingDoorMask;
     // Terrain vertices for filtering
     std::vector<float> terrainVertices;
     std::vector<unsigned int> terrainIndices;
@@ -125,7 +139,8 @@ static void UploadMeshToGpu(const std::vector<float>& vertices,
                             GLuint& VAO,
                             GLuint& VBO,
                             GLuint& EBO,
-                            int& indexCount) {
+                            int& indexCount,
+                            int floatsPerVertex = 3) {
     if (VAO) glDeleteVertexArrays(1, &VAO);
     if (VBO) glDeleteBuffers(1, &VBO);
     if (EBO) glDeleteBuffers(1, &EBO);
@@ -143,9 +158,27 @@ static void UploadMeshToGpu(const std::vector<float>& vertices,
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, floatsPerVertex * sizeof(float), (void*)0);
     glBindVertexArray(0);
     indexCount = static_cast<int>(indices.size());
+}
+
+// -----------------------------------------------------------------------------
+// Deterministic hashing helpers (for doors/windows placement)
+// -----------------------------------------------------------------------------
+static uint64_t splitmix64(uint64_t x) {
+    x += 0x9e3779b97f4a7c15ULL;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+static double deterministic_unit(int64_t a, int64_t b, int64_t c, int64_t d) {
+    uint64_t h = static_cast<uint64_t>(a);
+    h = splitmix64(h ^ static_cast<uint64_t>(b));
+    h = splitmix64(h ^ static_cast<uint64_t>(c));
+    h = splitmix64(h ^ static_cast<uint64_t>(d));
+    return static_cast<double>(h & ((1ULL << 53) - 1)) / static_cast<double>(1ULL << 53);
 }
 
 static void StartChunkWorker();
@@ -306,195 +339,54 @@ static void createMeshFromGrid(Chunk& c, int roadType, GLuint& VAO, GLuint& VBO,
     }
 }
 
-static bool pointInPolygon2D(const glm::vec2& point, const std::vector<glm::vec2>& polygon) {
-    int n = static_cast<int>(polygon.size());
-    if (n < 3) return false;
-    bool inside = false;
-    float x = point.x;
-    float y = point.y;
-    float p1x = polygon[0].x;
-    float p1y = polygon[0].y;
-    for (int i = 1; i <= n; ++i) {
-        float p2x = polygon[i % n].x;
-        float p2y = polygon[i % n].y;
-        if (y > std::min(p1y, p2y)) {
-            if (y <= std::max(p1y, p2y)) {
-                if (x <= std::max(p1x, p2x)) {
-                    float xinters;
-                    if (p1y != p2y) {
-                        xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x;
-                    } else {
-                        xinters = p1x;
-                    }
-                    if (p1x == p2x || x <= xinters) {
-                        inside = !inside;
-                    }
-                }
-            }
-        }
-        p1x = p2x;
-        p1y = p2y;
-    }
-    return inside;
-}
+// -----------------------------------------------------------------------------
+// Buildings: mesh generation lives in src/world/buildings/buildings.cpp
+// (BuildBuildingMeshAndDoorsFromGrid)
+// -----------------------------------------------------------------------------
 
 static void createBuildingMeshFromGrid(Chunk& c, GLuint& VAO, GLuint& VBO, GLuint& EBO, int& indexCount) {
-    std::vector<float> vertices;
-    std::vector<unsigned int> indices;
+    std::vector<float> solidVertices;
+    std::vector<unsigned int> solidIndices;
+    std::vector<float> windowVertices;
+    std::vector<unsigned int> windowIndices;
+    std::vector<uint8_t> doorMask;
 
-    // Build a per-cell height grid by rasterizing generated building polygons.
-    // roadGrid marks BUILDING cells, but does not store heights; BuildingShape does.
-    std::vector<std::vector<float>> heightGrid(g_chunkSize, std::vector<float>(g_chunkSize, 0.0f));
-    for (const auto& building : c.buildings) {
-        if (building.points.size() < 3) continue;
+    BuildingsMesh::BuildBuildingMeshesAndDoorsFromGrid(
+        c.cx,
+        c.cz,
+        g_chunkSize,
+        c.roadGrid,
+        c.buildings,
+        c.terrainVertices,
+        solidVertices,
+        solidIndices,
+        windowVertices,
+        windowIndices,
+        doorMask);
 
-        float minX = building.points[0].x;
-        float maxX = building.points[0].x;
-        float minY = building.points[0].y;
-        float maxY = building.points[0].y;
-        for (const auto& p : building.points) {
-            minX = std::min(minX, p.x);
-            maxX = std::max(maxX, p.x);
-            minY = std::min(minY, p.y);
-            maxY = std::max(maxY, p.y);
-        }
+    c.buildingDoorMask = std::move(doorMask);
 
-        int x0 = std::max(0, static_cast<int>(std::floor(minX)));
-        int x1 = std::min(g_chunkSize - 1, static_cast<int>(std::ceil(maxX)));
-        int z0 = std::max(0, static_cast<int>(std::floor(minY)));
-        int z1 = std::min(g_chunkSize - 1, static_cast<int>(std::ceil(maxY)));
-
-        for (int z = z0; z <= z1; ++z) {
-            for (int x = x0; x <= x1; ++x) {
-                if (c.roadGrid[z][x] != BUILDING) continue;
-                // Test cell center in grid coordinates.
-                glm::vec2 p(static_cast<float>(x) + 0.5f, static_cast<float>(z) + 0.5f);
-                if (pointInPolygon2D(p, building.points)) {
-                    heightGrid[z][x] = std::max(heightGrid[z][x], building.height);
-                }
-            }
-        }
-    }
-
-    auto pushVertex = [&](float x, float y, float z) {
-        vertices.push_back(x);
-        vertices.push_back(y);
-        vertices.push_back(z);
-    };
-
-    auto addQuad = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c_, const glm::vec3& d) {
-        unsigned int baseIdx = static_cast<unsigned int>(vertices.size() / 3);
-        pushVertex(a.x, a.y, a.z);
-        pushVertex(b.x, b.y, b.z);
-        pushVertex(c_.x, c_.y, c_.z);
-        pushVertex(d.x, d.y, d.z);
-        // Two triangles: (a,c,b) and (b,c,d) to match the existing terrain winding.
-        indices.push_back(baseIdx + 0);
-        indices.push_back(baseIdx + 2);
-        indices.push_back(baseIdx + 1);
-        indices.push_back(baseIdx + 1);
-        indices.push_back(baseIdx + 2);
-        indices.push_back(baseIdx + 3);
-    };
-
-    auto heightAt = [&](int gx, int gz) -> float {
-        if (gx < 0 || gz < 0 || gx >= g_chunkSize || gz >= g_chunkSize) return 0.0f;
-        if (c.roadGrid[gz][gx] != BUILDING) return 0.0f;
-        float hh = heightGrid[gz][gx];
-        if (hh <= 0.0f) {
-            // Keep consistent with the main loop fallback.
-            hh = CoreParams::GetBuildingParams().value("road_min_height", 10.0f);
-        }
-        return hh;
-    };
-
-    for (int z = 0; z < g_chunkSize - 1; ++z) {
-        for (int x = 0; x < g_chunkSize - 1; ++x) {
-            if (c.roadGrid[z][x] != BUILDING) continue;
-
-            float h = heightAt(x, z);
-
-            int i00 = (z + 0) * g_chunkSize + (x + 0);
-            int i10 = (z + 0) * g_chunkSize + (x + 1);
-            int i01 = (z + 1) * g_chunkSize + (x + 0);
-            int i11 = (z + 1) * g_chunkSize + (x + 1);
-
-            glm::vec3 v00(c.terrainVertices[i00 * 3], c.terrainVertices[i00 * 3 + 1], c.terrainVertices[i00 * 3 + 2]);
-            glm::vec3 v10(c.terrainVertices[i10 * 3], c.terrainVertices[i10 * 3 + 1], c.terrainVertices[i10 * 3 + 2]);
-            glm::vec3 v01(c.terrainVertices[i01 * 3], c.terrainVertices[i01 * 3 + 1], c.terrainVertices[i01 * 3 + 2]);
-            glm::vec3 v11(c.terrainVertices[i11 * 3], c.terrainVertices[i11 * 3 + 1], c.terrainVertices[i11 * 3 + 2]);
-
-            // Base (ground) face.
-            addQuad(v00, v10, v01, v11);
-
-            // Top face.
-            glm::vec3 t00(v00.x, v00.y + h, v00.z);
-            glm::vec3 t10(v10.x, v10.y + h, v10.z);
-            glm::vec3 t01(v01.x, v01.y + h, v01.z);
-            glm::vec3 t11(v11.x, v11.y + h, v11.z);
-            addQuad(t00, t10, t01, t11);
-
-            // Side faces:
-            // - Always emit along the outer boundary (neighbor not BUILDING).
-            // - Also emit vertical walls where adjacent BUILDING cells have a lower height.
-            //   This prevents holes when two buildings touch but have different heights.
-            const float eps = 1e-4f;
-
-            // North edge (neighbor z-1)
-            {
-                float hn = heightAt(x, z - 1);
-                if (h > hn + eps) {
-                    glm::vec3 b00(v00.x, v00.y + hn, v00.z);
-                    glm::vec3 b10(v10.x, v10.y + hn, v10.z);
-                    addQuad(b00, b10, t00, t10);
-                }
-            }
-            // South edge (neighbor z+1)
-            {
-                float hs = heightAt(x, z + 1);
-                if (h > hs + eps) {
-                    glm::vec3 b01(v01.x, v01.y + hs, v01.z);
-                    glm::vec3 b11(v11.x, v11.y + hs, v11.z);
-                    addQuad(b01, b11, t01, t11);
-                }
-            }
-            // West edge (neighbor x-1)
-            {
-                float hw = heightAt(x - 1, z);
-                if (h > hw + eps) {
-                    glm::vec3 b00(v00.x, v00.y + hw, v00.z);
-                    glm::vec3 b01(v01.x, v01.y + hw, v01.z);
-                    addQuad(b00, b01, t00, t01);
-                }
-            }
-            // East edge (neighbor x+1)
-            {
-                float he = heightAt(x + 1, z);
-                if (h > he + eps) {
-                    glm::vec3 b10(v10.x, v10.y + he, v10.z);
-                    glm::vec3 b11(v11.x, v11.y + he, v11.z);
-                    addQuad(b10, b11, t10, t11);
-                }
-            }
-        }
-    }
-
-    if (!vertices.empty()) {
+    if (!solidVertices.empty() && !solidIndices.empty()) {
         glGenVertexArrays(1, &VAO);
         glGenBuffers(1, &VBO);
         glGenBuffers(1, &EBO);
         glBindVertexArray(VAO);
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
-        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, solidVertices.size() * sizeof(float), solidVertices.data(), GL_STATIC_DRAW);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, solidIndices.size() * sizeof(unsigned int), solidIndices.data(), GL_STATIC_DRAW);
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
         glBindVertexArray(0);
-        indexCount = static_cast<int>(indices.size());
+        indexCount = static_cast<int>(solidIndices.size());
     } else {
         indexCount = 0;
     }
+
+    // Upload windows mesh to its own buffers on the chunk.
+    UploadMeshToGpu(windowVertices, windowIndices,
+                    c.buildingWindowsVAO, c.buildingWindowsVBO, c.buildingWindowsEBO,
+                    c.buildingWindowsIndexCount);
 }
 
 static void createChunkMesh(Chunk& c) {
@@ -510,8 +402,7 @@ static void createChunkMesh(Chunk& c) {
     createMeshFromGrid(c, ROAD, c.roadVAO, c.roadVBO, c.roadEBO, c.roadIndexCount);
     createMeshFromGrid(c, STREET, c.streetVAO, c.streetVBO, c.streetEBO, c.streetIndexCount);
     createBuildingMeshFromGrid(c, c.buildingVAO, c.buildingVBO, c.buildingEBO, c.buildingIndexCount);
-    
-    // Create 2D polygon meshes for building blueprints
+
     c.buildingPolygonMeshes.clear();
     c.buildingPolygonMeshes.reserve(c.buildings.size());
     
@@ -703,6 +594,12 @@ static void destroyChunk(Chunk& c) {
     if (c.buildingEBO) glDeleteBuffers(1, &c.buildingEBO);
     c.buildingVAO = c.buildingVBO = c.buildingEBO = 0;
     c.buildingIndexCount = 0;
+
+    if (c.buildingWindowsVAO) glDeleteVertexArrays(1, &c.buildingWindowsVAO);
+    if (c.buildingWindowsVBO) glDeleteBuffers(1, &c.buildingWindowsVBO);
+    if (c.buildingWindowsEBO) glDeleteBuffers(1, &c.buildingWindowsEBO);
+    c.buildingWindowsVAO = c.buildingWindowsVBO = c.buildingWindowsEBO = 0;
+    c.buildingWindowsIndexCount = 0;
     
     // Cleanup building polygon meshes
     for (auto& polygonMesh : c.buildingPolygonMeshes) {
@@ -806,129 +703,24 @@ static void BuildMeshFromGridCpu(const ChunkCpuData& src, int roadType, std::vec
     }
 }
 
-static void BuildBuildingMeshFromGridCpu(const ChunkCpuData& src, std::vector<float>& vertices, std::vector<unsigned int>& indices) {
-    vertices.clear();
-    indices.clear();
-
-    std::vector<std::vector<float>> heightGrid(g_chunkSize, std::vector<float>(g_chunkSize, 0.0f));
-    for (const auto& building : src.buildings) {
-        if (building.points.size() < 3) continue;
-
-        float minX = building.points[0].x;
-        float maxX = building.points[0].x;
-        float minY = building.points[0].y;
-        float maxY = building.points[0].y;
-        for (const auto& p : building.points) {
-            minX = std::min(minX, p.x);
-            maxX = std::max(maxX, p.x);
-            minY = std::min(minY, p.y);
-            maxY = std::max(maxY, p.y);
-        }
-
-        int x0 = std::max(0, static_cast<int>(std::floor(minX)));
-        int x1 = std::min(g_chunkSize - 1, static_cast<int>(std::ceil(maxX)));
-        int z0 = std::max(0, static_cast<int>(std::floor(minY)));
-        int z1 = std::min(g_chunkSize - 1, static_cast<int>(std::ceil(maxY)));
-
-        for (int z = z0; z <= z1; ++z) {
-            for (int x = x0; x <= x1; ++x) {
-                if (src.roadGrid[z][x] != BUILDING) continue;
-                glm::vec2 p(static_cast<float>(x) + 0.5f, static_cast<float>(z) + 0.5f);
-                if (pointInPolygon2D(p, building.points)) {
-                    heightGrid[z][x] = std::max(heightGrid[z][x], building.height);
-                }
-            }
-        }
-    }
-
-    auto pushVertex = [&](float x, float y, float z) {
-        vertices.push_back(x);
-        vertices.push_back(y);
-        vertices.push_back(z);
-    };
-
-    auto addQuad = [&](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c_, const glm::vec3& d) {
-        unsigned int baseIdx = static_cast<unsigned int>(vertices.size() / 3);
-        pushVertex(a.x, a.y, a.z);
-        pushVertex(b.x, b.y, b.z);
-        pushVertex(c_.x, c_.y, c_.z);
-        pushVertex(d.x, d.y, d.z);
-        indices.push_back(baseIdx + 0);
-        indices.push_back(baseIdx + 2);
-        indices.push_back(baseIdx + 1);
-        indices.push_back(baseIdx + 1);
-        indices.push_back(baseIdx + 2);
-        indices.push_back(baseIdx + 3);
-    };
-
-    auto heightAt = [&](int gx, int gz) -> float {
-        if (gx < 0 || gz < 0 || gx >= g_chunkSize || gz >= g_chunkSize) return 0.0f;
-        if (src.roadGrid[gz][gx] != BUILDING) return 0.0f;
-        float hh = heightGrid[gz][gx];
-        if (hh <= 0.0f) hh = CoreParams::GetBuildingParams().value("road_min_height", 10.0f);
-        return hh;
-    };
-
-    for (int z = 0; z < g_chunkSize - 1; ++z) {
-        for (int x = 0; x < g_chunkSize - 1; ++x) {
-            if (src.roadGrid[z][x] != BUILDING) continue;
-
-            float h = heightAt(x, z);
-
-            int i00 = (z + 0) * g_chunkSize + (x + 0);
-            int i10 = (z + 0) * g_chunkSize + (x + 1);
-            int i01 = (z + 1) * g_chunkSize + (x + 0);
-            int i11 = (z + 1) * g_chunkSize + (x + 1);
-
-            glm::vec3 v00(src.terrainVertices[i00 * 3], src.terrainVertices[i00 * 3 + 1], src.terrainVertices[i00 * 3 + 2]);
-            glm::vec3 v10(src.terrainVertices[i10 * 3], src.terrainVertices[i10 * 3 + 1], src.terrainVertices[i10 * 3 + 2]);
-            glm::vec3 v01(src.terrainVertices[i01 * 3], src.terrainVertices[i01 * 3 + 1], src.terrainVertices[i01 * 3 + 2]);
-            glm::vec3 v11(src.terrainVertices[i11 * 3], src.terrainVertices[i11 * 3 + 1], src.terrainVertices[i11 * 3 + 2]);
-
-            addQuad(v00, v10, v01, v11);
-
-            glm::vec3 t00(v00.x, v00.y + h, v00.z);
-            glm::vec3 t10(v10.x, v10.y + h, v10.z);
-            glm::vec3 t01(v01.x, v01.y + h, v01.z);
-            glm::vec3 t11(v11.x, v11.y + h, v11.z);
-            addQuad(t00, t10, t01, t11);
-
-            const float eps = 1e-4f;
-
-            { // North
-                float hn = heightAt(x, z - 1);
-                if (h > hn + eps) {
-                    glm::vec3 b00(v00.x, v00.y + hn, v00.z);
-                    glm::vec3 b10(v10.x, v10.y + hn, v10.z);
-                    addQuad(b00, b10, t00, t10);
-                }
-            }
-            { // South
-                float hs = heightAt(x, z + 1);
-                if (h > hs + eps) {
-                    glm::vec3 b01(v01.x, v01.y + hs, v01.z);
-                    glm::vec3 b11(v11.x, v11.y + hs, v11.z);
-                    addQuad(b01, b11, t01, t11);
-                }
-            }
-            { // West
-                float hw = heightAt(x - 1, z);
-                if (h > hw + eps) {
-                    glm::vec3 b00(v00.x, v00.y + hw, v00.z);
-                    glm::vec3 b01(v01.x, v01.y + hw, v01.z);
-                    addQuad(b00, b01, t00, t01);
-                }
-            }
-            { // East
-                float he = heightAt(x + 1, z);
-                if (h > he + eps) {
-                    glm::vec3 b10(v10.x, v10.y + he, v10.z);
-                    glm::vec3 b11(v11.x, v11.y + he, v11.z);
-                    addQuad(b10, b11, t10, t11);
-                }
-            }
-        }
-    }
+static void BuildBuildingMeshFromGridCpu(const ChunkCpuData& src,
+                                        std::vector<float>& vertices,
+                                        std::vector<unsigned int>& indices,
+                                        std::vector<float>& windowVertices,
+                                        std::vector<unsigned int>& windowIndices,
+                                        std::vector<uint8_t>& doorMask) {
+    BuildingsMesh::BuildBuildingMeshesAndDoorsFromGrid(
+        src.cx,
+        src.cz,
+        g_chunkSize,
+        src.roadGrid,
+        src.buildings,
+        src.terrainVertices,
+        vertices,
+        indices,
+        windowVertices,
+        windowIndices,
+        doorMask);
 }
 
 static void BuildBlueprintInputsCpu(ChunkCpuData& out, noise::module::Perlin& perlin) {
@@ -978,7 +770,12 @@ static ChunkCpuData GenerateChunkCpuData(int cx, int cz, noise::module::Perlin& 
     BuildMeshFromGridCpu(out, HIGHWAY, out.highwayMeshVertices, out.highwayMeshIndices);
     BuildMeshFromGridCpu(out, ROAD, out.roadMeshVertices, out.roadMeshIndices);
     BuildMeshFromGridCpu(out, STREET, out.streetMeshVertices, out.streetMeshIndices);
-    BuildBuildingMeshFromGridCpu(out, out.buildingMeshVertices, out.buildingMeshIndices);
+    BuildBuildingMeshFromGridCpu(out,
+                                out.buildingMeshVertices,
+                                out.buildingMeshIndices,
+                                out.buildingWindowMeshVertices,
+                                out.buildingWindowMeshIndices,
+                                out.buildingDoorMask);
     BuildBlueprintInputsCpu(out, perlin);
     return out;
 }
@@ -1074,6 +871,9 @@ static void ProcessReadyChunks(int currentCx, int currentCz) {
         UploadMeshToGpu(data.roadMeshVertices, data.roadMeshIndices, c.roadVAO, c.roadVBO, c.roadEBO, c.roadIndexCount);
         UploadMeshToGpu(data.streetMeshVertices, data.streetMeshIndices, c.streetVAO, c.streetVBO, c.streetEBO, c.streetIndexCount);
         UploadMeshToGpu(data.buildingMeshVertices, data.buildingMeshIndices, c.buildingVAO, c.buildingVBO, c.buildingEBO, c.buildingIndexCount);
+        UploadMeshToGpu(data.buildingWindowMeshVertices, data.buildingWindowMeshIndices, c.buildingWindowsVAO, c.buildingWindowsVBO, c.buildingWindowsEBO, c.buildingWindowsIndexCount);
+
+        c.buildingDoorMask = std::move(data.buildingDoorMask);
 
         c.buildingPolygonMeshes.clear();
         c.buildingPolygonMeshes.reserve(data.blueprints.size());
@@ -1129,7 +929,14 @@ void UpdateTerrain(const glm::vec3& cameraPos) {
     }
 }
 
-void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsProgram, GLuint streetsProgram, GLuint buildingsProgram, const glm::mat4& proj, const glm::mat4& view) {
+void RenderTerrain(GLuint terrainProgram,
+                   GLuint highwaysProgram,
+                   GLuint roadsProgram,
+                   GLuint streetsProgram,
+                   GLuint buildingsProgram,
+                   GLuint buildingWindowsProgram,
+                   const glm::mat4& proj,
+                   const glm::mat4& view) {
     for (auto& kv : g_chunks) {
         Chunk& c = kv.second;
         glm::mat4 model = glm::mat4(1.0f);
@@ -1186,16 +993,37 @@ void RenderTerrain(GLuint terrainProgram, GLuint highwaysProgram, GLuint roadsPr
             glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
         }
         
-        // Render building base (2D footprint)
+        // Render buildings (solid mesh)
         if (buildingsProgram != 0 && c.buildingVAO != 0 && c.buildingIndexCount > 0) {
             glUseProgram(buildingsProgram);
             GLint loc = glGetUniformLocation(buildingsProgram, "uMVP");
             GLint colorLoc = glGetUniformLocation(buildingsProgram, "uColor");
             glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
             const auto& buildingParams = CoreParams::GetBuildingParams();
-            glUniform3f(colorLoc, buildingParams.value("color_r", 180) / 255.0f, buildingParams.value("color_g", 180) / 255.0f, buildingParams.value("color_b", 180) / 255.0f);
+            const float wr = buildingParams.value("color_r", 180) / 255.0f;
+            const float wg = buildingParams.value("color_g", 180) / 255.0f;
+            const float wb = buildingParams.value("color_b", 180) / 255.0f;
+            glUniform3f(colorLoc, wr, wg, wb);
             glBindVertexArray(c.buildingVAO);
             glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
+        }
+
+        // Render building windows (separate mesh + shader)
+        if (buildingWindowsProgram != 0 && c.buildingWindowsVAO != 0 && c.buildingWindowsIndexCount > 0) {
+            glUseProgram(buildingWindowsProgram);
+            GLint loc = glGetUniformLocation(buildingWindowsProgram, "uMVP");
+            GLint colorLoc = glGetUniformLocation(buildingWindowsProgram, "uColor");
+            glUniformMatrix4fv(loc, 1, GL_FALSE, glm::value_ptr(mvp));
+            const auto& buildingParams = CoreParams::GetBuildingParams();
+            const float wr = buildingParams.value("color_r", 180) / 255.0f;
+            const float wg = buildingParams.value("color_g", 180) / 255.0f;
+            const float wb = buildingParams.value("color_b", 180) / 255.0f;
+            const float winR = std::clamp(wr * 0.45f + 0.12f, 0.0f, 1.0f);
+            const float winG = std::clamp(wg * 0.55f + 0.20f, 0.0f, 1.0f);
+            const float winB = std::clamp(wb * 0.60f + 0.35f, 0.0f, 1.0f);
+            glUniform3f(colorLoc, winR, winG, winB);
+            glBindVertexArray(c.buildingWindowsVAO);
+            glDrawElements(GL_TRIANGLES, c.buildingWindowsIndexCount, GL_UNSIGNED_INT, 0);
         }
     }
 
@@ -1219,7 +1047,10 @@ static float ChunkDistSq(const Chunk& c, const glm::vec3& cam) {
 }
 
 // Render a single chunk's geometry. Terrain/roads are always drawn; buildings can be skipped.
-static void DrawChunkGeometry(const Chunk& c, GLint modelLoc, GLint colorLoc, bool drawBuildings) {
+static void DrawChunkGeometry(const Chunk& c,
+                              GLint modelLoc,
+                              GLint colorLoc,
+                              bool drawBuildings) {
     glm::mat4 model = glm::mat4(1.0f);
     glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
 
@@ -1249,7 +1080,10 @@ static void DrawChunkGeometry(const Chunk& c, GLint modelLoc, GLint colorLoc, bo
     }
     if (drawBuildings && c.buildingVAO != 0 && c.buildingIndexCount > 0) {
         const auto& buildingParams = CoreParams::GetBuildingParams();
-        glUniform3f(colorLoc, buildingParams.value("color_r", 180) / 255.0f, buildingParams.value("color_g", 180) / 255.0f, buildingParams.value("color_b", 180) / 255.0f);
+        const float wr = buildingParams.value("color_r", 180) / 255.0f;
+        const float wg = buildingParams.value("color_g", 180) / 255.0f;
+        const float wb = buildingParams.value("color_b", 180) / 255.0f;
+        glUniform3f(colorLoc, wr, wg, wb);
         glBindVertexArray(c.buildingVAO);
         glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
     }
@@ -1258,6 +1092,7 @@ static void DrawChunkGeometry(const Chunk& c, GLint modelLoc, GLint colorLoc, bo
 // Render terrain to G-buffer for deferred rendering.
 // Preprocessing: skip buildings for chunks outside the camera view frustum.
 void RenderTerrainToGBuffer(GLuint geometryShader,
+                            GLuint windowsGeometryShader,
                             const glm::mat4& proj,
                             const glm::mat4& view,
                             const glm::vec3& cameraPos,
@@ -1282,6 +1117,41 @@ void RenderTerrainToGBuffer(GLuint geometryShader,
         (void)cameraFront;
         const bool visible = FrustumUtil::IntersectsAabb(frustum, c.aabb.min, c.aabb.max);
         DrawChunkGeometry(c, modelLoc, colorLoc, /*drawBuildings=*/visible);
+    }
+
+    // Draw windows as a second pass with their own geometry shader (still writing to the same G-buffer).
+    if (windowsGeometryShader != 0) {
+        glUseProgram(windowsGeometryShader);
+
+        GLint wModelLoc = glGetUniformLocation(windowsGeometryShader, "model");
+        GLint wViewLoc  = glGetUniformLocation(windowsGeometryShader, "view");
+        GLint wProjLoc  = glGetUniformLocation(windowsGeometryShader, "projection");
+        GLint wColorLoc = glGetUniformLocation(windowsGeometryShader, "uColor");
+
+        glUniformMatrix4fv(wViewLoc, 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(wProjLoc, 1, GL_FALSE, glm::value_ptr(proj));
+
+        glm::mat4 model = glm::mat4(1.0f);
+        glUniformMatrix4fv(wModelLoc, 1, GL_FALSE, glm::value_ptr(model));
+
+        const auto& buildingParams = CoreParams::GetBuildingParams();
+        const float wr = buildingParams.value("color_r", 180) / 255.0f;
+        const float wg = buildingParams.value("color_g", 180) / 255.0f;
+        const float wb = buildingParams.value("color_b", 180) / 255.0f;
+        const float winR = std::clamp(wr * 0.45f + 0.12f, 0.0f, 1.0f);
+        const float winG = std::clamp(wg * 0.55f + 0.20f, 0.0f, 1.0f);
+        const float winB = std::clamp(wb * 0.60f + 0.35f, 0.0f, 1.0f);
+        glUniform3f(wColorLoc, winR, winG, winB);
+
+        for (auto& kv : g_chunks) {
+            const Chunk& c = kv.second;
+            const bool visible = FrustumUtil::IntersectsAabb(frustum, c.aabb.min, c.aabb.max);
+            if (!visible) continue;
+            if (c.buildingWindowsVAO == 0 || c.buildingWindowsIndexCount <= 0) continue;
+            glBindVertexArray(c.buildingWindowsVAO);
+            glDrawElements(GL_TRIANGLES, c.buildingWindowsIndexCount, GL_UNSIGNED_INT, 0);
+        }
+        glBindVertexArray(0);
     }
 
     glBindVertexArray(0);
@@ -1331,9 +1201,15 @@ void RenderTerrainToShadowMap(GLuint shadowShader,
             glDrawElements(GL_TRIANGLES, c.streetIndexCount, GL_UNSIGNED_INT, 0);
         }
         
-        if (visible && c.buildingVAO != 0 && c.buildingIndexCount > 0) {
-            glBindVertexArray(c.buildingVAO);
-            glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
+        if (visible) {
+            if (c.buildingVAO != 0 && c.buildingIndexCount > 0) {
+                glBindVertexArray(c.buildingVAO);
+                glDrawElements(GL_TRIANGLES, c.buildingIndexCount, GL_UNSIGNED_INT, 0);
+            }
+            if (c.buildingWindowsVAO != 0 && c.buildingWindowsIndexCount > 0) {
+                glBindVertexArray(c.buildingWindowsVAO);
+                glDrawElements(GL_TRIANGLES, c.buildingWindowsIndexCount, GL_UNSIGNED_INT, 0);
+            }
         }
     }
 
@@ -1374,15 +1250,30 @@ static bool isBuildingCellGlobal(int cellX, int cellZ) {
     return c.roadGrid[localZ][localX] == BUILDING;
 }
 
+static uint8_t doorMaskCellGlobal(int cellX, int cellZ) {
+    const int cellsPerChunk = g_chunkSize - 1;
+    if (cellsPerChunk <= 0) return 0;
+
+    const int cx = static_cast<int>(std::floor(static_cast<float>(cellX) / static_cast<float>(cellsPerChunk)));
+    const int cz = static_cast<int>(std::floor(static_cast<float>(cellZ) / static_cast<float>(cellsPerChunk)));
+    const int localX = cellX - cx * cellsPerChunk;
+    const int localZ = cellZ - cz * cellsPerChunk;
+
+    if (localX < 0 || localX >= cellsPerChunk || localZ < 0 || localZ >= cellsPerChunk) return 0;
+    auto it = g_chunks.find(keyFor(cx, cz));
+    if (it == g_chunks.end()) return 0;
+    Chunk& c = it->second;
+    if (c.buildingDoorMask.empty()) return 0;
+    const size_t idx = static_cast<size_t>(localZ * cellsPerChunk + localX);
+    if (idx >= c.buildingDoorMask.size()) return 0;
+    return c.buildingDoorMask[idx];
+}
+
 bool CollidesWithBuilding(float x, float z, float radius) {
     if (g_scale <= 0.0f) return false;
 
-    // Fast path: point test.
-    if (radius <= 0.0f) {
-        const int cellX = static_cast<int>(std::floor(x / g_scale));
-        const int cellZ = static_cast<int>(std::floor(z / g_scale));
-        return isBuildingCellGlobal(cellX, cellZ);
-    }
+    // Treat point-test as a tiny circle so walls are respected.
+    if (radius <= 0.0f) radius = std::max(0.001f, g_scale * 0.02f);
 
     const float minX = x - radius;
     const float maxX = x + radius;
@@ -1395,23 +1286,52 @@ bool CollidesWithBuilding(float x, float z, float radius) {
     const int maxCellZ = static_cast<int>(std::floor(maxZ / g_scale));
 
     const float r2 = radius * radius;
+    const float wallThickness = std::clamp(g_scale * 0.18f, 0.05f, g_scale);
 
-    for (int cz = minCellZ; cz <= maxCellZ; ++cz) {
-        for (int cx = minCellX; cx <= maxCellX; ++cx) {
-            if (!isBuildingCellGlobal(cx, cz)) continue;
+    auto circleIntersectsAabbXZ = [&](float ax0, float az0, float ax1, float az1) -> bool {
+        const float closestX = std::clamp(x, ax0, ax1);
+        const float closestZ = std::clamp(z, az0, az1);
+        const float dx = x - closestX;
+        const float dz = z - closestZ;
+        return (dx * dx + dz * dz) <= r2;
+    };
 
-            const float cellX0 = static_cast<float>(cx) * g_scale;
-            const float cellZ0 = static_cast<float>(cz) * g_scale;
-            const float cellX1 = cellX0 + g_scale;
-            const float cellZ1 = cellZ0 + g_scale;
+    // Scan nearby building cells and test only their boundary wall edges (doors are skipped).
+    // Expand by one cell to catch edges near the circle boundary.
+    for (int cellZ = minCellZ - 1; cellZ <= maxCellZ + 1; ++cellZ) {
+        for (int cellX = minCellX - 1; cellX <= maxCellX + 1; ++cellX) {
+            if (!isBuildingCellGlobal(cellX, cellZ)) continue;
 
-            // Closest point on the cell AABB (in XZ) to the circle center.
-            const float closestX = std::clamp(x, cellX0, cellX1);
-            const float closestZ = std::clamp(z, cellZ0, cellZ1);
-            const float dx = x - closestX;
-            const float dz = z - closestZ;
-            if (dx * dx + dz * dz <= r2) {
-                return true;
+            const uint8_t doorBits = doorMaskCellGlobal(cellX, cellZ);
+
+            const float x0 = static_cast<float>(cellX) * g_scale;
+            const float z0 = static_cast<float>(cellZ) * g_scale;
+            const float x1 = x0 + g_scale;
+            const float z1 = z0 + g_scale;
+
+            // North wall (edge at z0)
+            if (!isBuildingCellGlobal(cellX, cellZ - 1)) {
+                if ((doorBits & BuildingsMesh::DoorN) == 0) {
+                    if (circleIntersectsAabbXZ(x0, z0 - wallThickness, x1, z0 + wallThickness)) return true;
+                }
+            }
+            // South wall (edge at z1)
+            if (!isBuildingCellGlobal(cellX, cellZ + 1)) {
+                if ((doorBits & BuildingsMesh::DoorS) == 0) {
+                    if (circleIntersectsAabbXZ(x0, z1 - wallThickness, x1, z1 + wallThickness)) return true;
+                }
+            }
+            // West wall (edge at x0)
+            if (!isBuildingCellGlobal(cellX - 1, cellZ)) {
+                if ((doorBits & BuildingsMesh::DoorW) == 0) {
+                    if (circleIntersectsAabbXZ(x0 - wallThickness, z0, x0 + wallThickness, z1)) return true;
+                }
+            }
+            // East wall (edge at x1)
+            if (!isBuildingCellGlobal(cellX + 1, cellZ)) {
+                if ((doorBits & BuildingsMesh::DoorE) == 0) {
+                    if (circleIntersectsAabbXZ(x1 - wallThickness, z0, x1 + wallThickness, z1)) return true;
+                }
             }
         }
     }

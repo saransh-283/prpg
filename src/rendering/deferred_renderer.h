@@ -59,6 +59,7 @@ namespace DeferredRenderer {
 
     // Get shader programs
     GLuint GetGeometryShader();
+    GLuint GetGeometryWindowsShader();
     GLuint GetLightingShader();
     GLuint GetShadowShader();
 

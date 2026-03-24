@@ -618,7 +618,7 @@ int main(int argc, char *argv[])
 
             // Render scene geometry directly with an unlit shader.
             const GLuint wf = wireframeProgram ? wireframeProgram : DeferredRenderer::GetGeometryShader();
-            RenderTerrainToGBuffer(wf, proj, view, cameraPos, cameraFront);
+            RenderTerrainToGBuffer(wf, /*windowsGeometryShader=*/0, proj, view, cameraPos, cameraFront);
             npcSystem.RenderToGBuffer(wf, proj, view, cameraPos, cameraFront);
         } else {
             // Restore default clear color; skybox will cover anyway.
@@ -635,7 +635,7 @@ int main(int argc, char *argv[])
             DeferredRenderer::BeginGeometryPass();
 
             // Render world geometry to G-buffer
-            RenderTerrainToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view, cameraPos, cameraFront);
+            RenderTerrainToGBuffer(DeferredRenderer::GetGeometryShader(), DeferredRenderer::GetGeometryWindowsShader(), proj, view, cameraPos, cameraFront);
             npcSystem.RenderToGBuffer(DeferredRenderer::GetGeometryShader(), proj, view, cameraPos, cameraFront);
 
             DeferredRenderer::EndGeometryPass();

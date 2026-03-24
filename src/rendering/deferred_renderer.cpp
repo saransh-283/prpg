@@ -12,6 +12,7 @@ namespace DeferredRenderer {
     static DirectionalLight sun;
     
     static GLuint geometryShader = 0;
+    static GLuint geometryWindowsShader = 0;
     static GLuint lightingShader = 0;
     static GLuint shadowShader = 0;
     
@@ -144,6 +145,13 @@ namespace DeferredRenderer {
             return false;
         }
 
+        if (!LoadShaderProgram(Resources::Shaders::Deferred::GeometryWindows::VERTEX,
+                              Resources::Shaders::Deferred::GeometryWindows::FRAGMENT,
+                              geometryWindowsShader)) {
+            std::cerr << "Failed to load windows geometry shader" << std::endl;
+            return false;
+        }
+
         if (!LoadShaderProgram(Resources::Shaders::Deferred::Lighting::VERTEX, 
                               Resources::Shaders::Deferred::Lighting::FRAGMENT, 
                               lightingShader)) {
@@ -195,6 +203,7 @@ namespace DeferredRenderer {
         }
 
         if (geometryShader) glDeleteProgram(geometryShader);
+        if (geometryWindowsShader) glDeleteProgram(geometryWindowsShader);
         if (lightingShader) glDeleteProgram(lightingShader);
         if (shadowShader) glDeleteProgram(shadowShader);
     }
@@ -353,6 +362,7 @@ namespace DeferredRenderer {
     }
 
     GLuint GetGeometryShader() { return geometryShader; }
+    GLuint GetGeometryWindowsShader() { return geometryWindowsShader; }
     GLuint GetLightingShader() { return lightingShader; }
     GLuint GetShadowShader() { return shadowShader; }
 
