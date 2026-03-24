@@ -22,6 +22,25 @@ std::vector<BuildingShape> generate_buildings_grid(std::vector<std::vector<int>>
 
 namespace BuildingsMesh {
 
+// Minimal ramp metadata needed for gameplay sampling (walkable height, floor cutouts).
+// Coordinates are in chunk-local building cell space: x/z in [0,chunkSize-2].
+struct BuildingRampPlan {
+    bool valid = false;
+    // 0=N,1=S,2=W,3=E (which wall side the ramp faces; slope rises toward the wall).
+    int wallDir = 0;
+    // Top (high) ramp cell in cell coordinates (may be inset from the outer wall).
+    int topX = 0;
+    int topZ = 0;
+    // Ramp sloped run footprint length in cells.
+    int len = 0;
+    // Ramp width footprint in cells.
+    int width = 0;
+    // Required flat landing cells beyond the base (not part of the sloped surface).
+    int landing = 0;
+    // Width offset direction: +1 or -1.
+    int perpSign = +1;
+};
+
 // Door-edge mask: per cell (chunkSize-1 by chunkSize-1), 4-bit mask: N,S,W,E.
 enum : uint8_t {
     DoorN = 1 << 0,
@@ -56,5 +75,23 @@ void BuildBuildingMeshesAndDoorsFromGrid(
     std::vector<float>& outWindowVertices,
     std::vector<unsigned int>& outWindowIndices,
     std::vector<uint8_t>& outDoorMask);
+
+// Extended version that also outputs building-cell ownership and the chosen ramp plan per building.
+// - outOwnerGrid: flattened (cellsPerChunk*cellsPerChunk) array of building indices per cell, or -1.
+// - outRampPlans: size == buildings.size(), one plan per building (valid=false if none).
+void BuildBuildingMeshesAndDoorsFromGrid(
+    int chunkCx,
+    int chunkCz,
+    int chunkSize,
+    const std::vector<std::vector<int>>& roadGrid,
+    const std::vector<BuildingShape>& buildings,
+    const std::vector<float>& terrainVertices,
+    std::vector<float>& outSolidVertices,
+    std::vector<unsigned int>& outSolidIndices,
+    std::vector<float>& outWindowVertices,
+    std::vector<unsigned int>& outWindowIndices,
+    std::vector<uint8_t>& outDoorMask,
+    std::vector<int16_t>& outOwnerGrid,
+    std::vector<BuildingRampPlan>& outRampPlans);
 
 } // namespace BuildingsMesh

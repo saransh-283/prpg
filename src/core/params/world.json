@@ -2,6 +2,6 @@
   "initial_view_radius": 3,
   "chunk_size": 256,
   "vertex_spacing": 0.5,
-  "view_radius": 3,
+  "view_radius": 2,
   "perlin_seed": 1337
 }

@@ -59,6 +59,8 @@ private:
     float mouseSensitivity;
     float moveSpeed; // units per second
     float gravity;
+    float jumpVelocity;
+    float headClearance;
     
     // Helper methods
     void UpdateCameraFront();

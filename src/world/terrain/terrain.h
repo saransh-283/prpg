@@ -59,9 +59,20 @@ void CleanupTerrain();
 // Query terrain height at world (x, z)
 float SampleTerrainHeight(float x, float z);
 
+// Query walkable floor/ceiling at world (x, z) given the player's current feet height.
+// - feetY is the player's feet/world-contact height (cameraY - eye_height).
+// - outFloorY is the best-matching walkable surface at/below the player (terrain, floor, or ramp).
+// - outCeilingY is the nearest ceiling surface above the player (next interior floor or roof), or +inf if none.
+// Returns true if the query position is inside a generated building cell; false otherwise.
+bool SampleWalkableFloorAndCeiling(float x, float z, float feetY, float& outFloorY, float& outCeilingY);
+
 // True if a circle at (x,z) overlaps any generated building footprint.
 // Note: buildings only exist inside generated chunks; outside that area this returns false.
 bool CollidesWithBuilding(float x, float z, float radius);
+
+// Same as above, but only considers building wall triangles whose vertical span overlaps [yMin, yMax].
+// This allows doorway openings (walls above the door height) to not block the player.
+bool CollidesWithBuilding(float x, float z, float radius, float yMin, float yMax);
 
 // Convert a world-space XZ position to chunk coordinates (cx, cz)
 void WorldToChunk(float x, float z, int &out_cx, int &out_cz);

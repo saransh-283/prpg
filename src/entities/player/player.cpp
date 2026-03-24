@@ -3,6 +3,8 @@
 #include <world/terrain/terrain.h>
 #include <entities/npc/npc.h>
 #include <iostream>
+#include <limits>
+#include <cmath>
 
 Player::Player()
     : cameraPos(0.0f, 0.0f, 3.0f)
@@ -18,6 +20,8 @@ Player::Player()
     mouseSensitivity = p.value("mouse_sensitivity", 0.1f);
     moveSpeed = p.value("move_speed", 5.0f);
     gravity = p.value("gravity", -9.8f);
+    jumpVelocity = p.value("jump_velocity", 5.5f);
+    headClearance = p.value("head_clearance", 0.12f);
 }
 
 void Player::Initialize(const glm::vec3& initialPosition)
@@ -63,10 +67,15 @@ void Player::HandleKeyboard(const Uint8* keyboardState, float deltaTime, const N
 
     const auto& p = CoreParams::GetPlayerParams();
     const float r = static_cast<float>(p.value("collision_radius", 0.5f));
+    const float eyeH = static_cast<float>(p.value("eye_height", 1.6f));
     glm::vec3 newPos = cameraPos;
 
     auto collides = [&](float x, float z) {
-        if (CollidesWithBuilding(x, z, r)) return true;
+        // Height-aware building collision so doorway openings work:
+        // collide only against wall triangles that overlap the player's vertical span.
+        const float feetY = cameraPos.y - eyeH;
+        const float headY = cameraPos.y + std::max(0.02f, headClearance);
+        if (CollidesWithBuilding(x, z, r, feetY, headY)) return true;
         if (npcSystem && npcSystem->CollidesXZ(x, z, r)) return true;
         return false;
     };
@@ -103,7 +112,12 @@ void Player::HandleMouseMotion(float xrel, float yrel)
 
 void Player::HandleKeyPress(SDL_Keycode key)
 {
-    (void)key;
+    if (key == SDLK_SPACE) {
+        if (onGround) {
+            velocity.y = std::max(0.0f, jumpVelocity);
+            onGround = false;
+        }
+    }
 }
 
 void Player::SetMouseCaptured(bool captured)
@@ -129,14 +143,38 @@ void Player::ApplyGravity(float deltaTime)
 
 void Player::CheckGroundCollision()
 {
-    // Ensure player stays above terrain
     const auto& p = CoreParams::GetPlayerParams();
-    float groundY = SampleTerrainHeight(cameraPos.x, cameraPos.z) + static_cast<float>(p.value("eye_height", 1.6f));
-    if (cameraPos.y <= groundY) {
-        cameraPos.y = groundY;
-        velocity.y = 0.0f;
+    const float eyeH = static_cast<float>(p.value("eye_height", 1.6f));
+    const float feetY = cameraPos.y - eyeH;
+
+    float floorY = 0.0f;
+    float ceilingY = std::numeric_limits<float>::infinity();
+    (void)SampleWalkableFloorAndCeiling(cameraPos.x, cameraPos.z, feetY, floorY, ceilingY);
+
+    // Reject spurious "ceiling" hits that are effectively the current floor plane.
+    // With mesh sampling, tiny penetration can otherwise classify the same surface as both
+    // floor and ceiling and force the camera downward.
+    const float minStandingHeadroom = eyeH + std::max(0.02f, headClearance);
+    if (std::isfinite(ceilingY) && ceilingY <= floorY + minStandingHeadroom) {
+        ceilingY = std::numeric_limits<float>::infinity();
+    }
+
+    // Ground snap.
+    const float desiredCamY = floorY + eyeH;
+    if (cameraPos.y <= desiredCamY) {
+        cameraPos.y = desiredCamY;
+        if (velocity.y < 0.0f) velocity.y = 0.0f;
         onGround = true;
     } else {
         onGround = false;
+    }
+
+    // Ceiling collision (prevents jumping through upper floors / roof).
+    if (std::isfinite(ceilingY)) {
+        const float maxCamY = ceilingY - std::max(0.02f, headClearance);
+        if (cameraPos.y > maxCamY) {
+            cameraPos.y = maxCamY;
+            if (velocity.y > 0.0f) velocity.y = 0.0f;
+        }
     }
 }

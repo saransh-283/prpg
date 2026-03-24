@@ -356,12 +356,16 @@ void BuildBuildingMeshesAndDoorsFromGrid(
     std::vector<unsigned int>& outSolidIndices,
     std::vector<float>& outWindowVertices,
     std::vector<unsigned int>& outWindowIndices,
-    std::vector<uint8_t>& outDoorMask) {
+    std::vector<uint8_t>& outDoorMask,
+    std::vector<int16_t>& outOwnerGrid,
+    std::vector<BuildingRampPlan>& outRampPlans) {
 
     outSolidVertices.clear();
     outSolidIndices.clear();
     outWindowVertices.clear();
     outWindowIndices.clear();
+    outOwnerGrid.clear();
+    outRampPlans.clear();
 
     const int cellsPerChunk = chunkSize - 1;
     if (cellsPerChunk <= 0) {
@@ -416,6 +420,15 @@ void BuildBuildingMeshesAndDoorsFromGrid(
         }
     }
 
+    // Export owner grid for gameplay sampling (cells only, not the outermost vertex row/col).
+    outOwnerGrid.resize(static_cast<size_t>(cellsPerChunk * cellsPerChunk), static_cast<int16_t>(-1));
+    for (int z = 0; z < cellsPerChunk; ++z) {
+        for (int x = 0; x < cellsPerChunk; ++x) {
+            const int bi = ownerGrid[z][x];
+            outOwnerGrid[static_cast<size_t>(z * cellsPerChunk + x)] = static_cast<int16_t>(bi);
+        }
+    }
+
     const auto& buildingParams = CoreParams::GetBuildingParams();
     const auto& playerParams = CoreParams::GetPlayerParams();
     const int seed = buildingParams.value("seed", 42);
@@ -433,6 +446,15 @@ void BuildBuildingMeshesAndDoorsFromGrid(
     // Window probabilities (per facade cell).
     const float windowProbUpper = buildingParams.value("window_probability", 0.18f);
     const float windowProbGround = buildingParams.value("window_probability_ground", 0.03f);
+
+    // Interior floors / stairs.
+    const float floorHeight = std::max(0.5f, static_cast<float>(buildingParams.value("floor_height", 3.0f)));
+    const int maxFloors = std::max(1, buildingParams.value("max_floors", 16));
+    // Ramp slope/length: prefer a user-facing angle (degrees). If absent/invalid, fall back to explicit cell length.
+    int rampLengthCells = std::clamp(buildingParams.value("stair_ramp_length_cells", 4), 2, 16);
+    const int rampWidthCells = std::clamp(buildingParams.value("stair_ramp_width_cells", 2), 1, 8);
+    const int rampLandingCells = std::clamp(buildingParams.value("stair_ramp_landing_cells", 1), 0, 8);
+    const int rampTopInsetCells = std::clamp(buildingParams.value("stair_ramp_top_inset_cells", 0), 0, 8);
 
     // Pick one door edge per building, biased to edges adjacent to a road.
     struct DoorCandidate { int x = 0; int z = 0; int dir = 0; };
@@ -565,6 +587,208 @@ void BuildBuildingMeshesAndDoorsFromGrid(
 
     const float eps = 1e-4f;
 
+    // Helper to read a terrain vertex (grid coords in [0,chunkSize-1]).
+    auto terrainV = [&](int vx, int vz) -> glm::vec3 {
+        vx = std::clamp(vx, 0, chunkSize - 1);
+        vz = std::clamp(vz, 0, chunkSize - 1);
+        const int idx = vz * chunkSize + vx;
+        return glm::vec3(
+            terrainVertices[idx * 3 + 0],
+            terrainVertices[idx * 3 + 1],
+            terrainVertices[idx * 3 + 2]
+        );
+    };
+
+    // Estimate XZ cell size in world units (typically ~1.0).
+    float cellWorldSizeXZ = 1.0f;
+    if (chunkSize >= 2) {
+        const glm::vec3 o = terrainV(0, 0);
+        const glm::vec3 ox = terrainV(1, 0);
+        const glm::vec3 oz = terrainV(0, 1);
+        const float dx = std::abs(ox.x - o.x) + std::abs(ox.z - o.z);
+        const float dz = std::abs(oz.x - o.x) + std::abs(oz.z - o.z);
+        const float est = std::max(dx, dz);
+        if (est > 1e-4f) cellWorldSizeXZ = est;
+    }
+
+    // If an angle is provided, derive ramp length in cells from trig: run = rise / tan(theta).
+    // Smaller angle => longer / less steep ramp.
+    {
+        const double angleDeg = buildingParams.value("stair_ramp_angle_degrees", 0.0);
+        if (angleDeg > 1.0 && angleDeg < 89.0) {
+            const double theta = angleDeg * (M_PI / 180.0);
+            const double runWorld = static_cast<double>(floorHeight) / std::tan(theta);
+            const double denom = std::max(1e-4, static_cast<double>(cellWorldSizeXZ));
+            const int derivedCells = static_cast<int>(std::ceil(runWorld / denom));
+            rampLengthCells = std::clamp(derivedCells, 2, 16);
+        }
+    }
+
+    auto buildingFloorCount = [&](int bi) -> int {
+        if (bi < 0 || bi >= static_cast<int>(buildings.size())) return 1;
+        const float h = buildings[bi].height;
+        const int floors = std::max(1, static_cast<int>(std::floor(h / floorHeight)));
+        return std::clamp(floors, 1, maxFloors);
+    };
+
+    struct RampPlan {
+        bool valid = false;
+        // wall direction the ramp faces: 0=N,1=S,2=W,3=E
+        int wallDir = 0;
+        // top (high) ramp cell in cell coordinates (may be inset from the outer wall)
+        int topX = 0;
+        int topZ = 0;
+        // ramp runs inward for `len` cells, leaving `landing` cells flat beyond the base
+        int len = 0;
+        int width = 0;
+        int landing = 0;
+        // width offset direction: +1 means +perp, -1 means -perp
+        int perpSign = +1;
+
+        bool CoversCell(int x, int z) const {
+            if (!valid) return false;
+
+            // Compute inward direction (dx,dz) and perpendicular direction (px,pz).
+            int dx = 0, dz = 0;
+            int px = 0, pz = 0;
+            switch (wallDir) {
+                case 0: dx = 0; dz = +1; px = +1; pz = 0; break; // N wall, inward +z, width +x
+                case 1: dx = 0; dz = -1; px = +1; pz = 0; break; // S wall, inward -z, width +x
+                case 2: dx = +1; dz = 0; px = 0; pz = +1; break; // W wall, inward +x, width +z
+                case 3: dx = -1; dz = 0; px = 0; pz = +1; break; // E wall, inward -x, width +z
+                default: break;
+            }
+            px *= perpSign;
+            pz *= perpSign;
+
+            // Ramp footprint is an LxW rectangle of cells starting at top cell and extending inward.
+            for (int t = 0; t < len; ++t) {
+                for (int w = 0; w < width; ++w) {
+                    const int cx = topX + dx * t + px * w;
+                    const int cz = topZ + dz * t + pz * w;
+                    if (cx == x && cz == z) return true;
+                }
+            }
+            return false;
+        }
+    };
+
+    std::vector<RampPlan> rampPlans;
+    rampPlans.resize(buildings.size());
+
+    auto ownedBy = [&](int bi, int x, int z) -> bool {
+        if (x < 0 || z < 0 || x >= cellsPerChunk || z >= cellsPerChunk) return false;
+        if (cellType(x, z) != 4) return false;
+        return ownerGrid[z][x] == bi;
+    };
+
+    auto isBoundaryCell = [&](int x, int z, int dir) -> bool {
+        const int nx[4] = { x, x, x - 1, x + 1 };
+        const int nz[4] = { z - 1, z + 1, z, z };
+        return cellType(nx[dir], nz[dir]) != 4;
+    };
+
+    auto canPlaceRamp = [&](int bi, int wallX, int wallZ, int wallDir, int perpSign) -> bool {
+        // Inward direction and perpendicular direction.
+        int dx = 0, dz = 0;
+        int px = 0, pz = 0;
+        switch (wallDir) {
+            case 0: dx = 0; dz = +1; px = +1; pz = 0; break;
+            case 1: dx = 0; dz = -1; px = +1; pz = 0; break;
+            case 2: dx = +1; dz = 0; px = 0; pz = +1; break;
+            case 3: dx = -1; dz = 0; px = 0; pz = +1; break;
+            default: break;
+        }
+        px *= perpSign;
+        pz *= perpSign;
+
+        const int topX = wallX + dx * rampTopInsetCells;
+        const int topZ = wallZ + dz * rampTopInsetCells;
+
+        // Need a full run of (len + landing) cells inward from the ramp top cell, and width cells perpendicular.
+        const int needT = rampLengthCells + rampLandingCells;
+        for (int t = 0; t < needT; ++t) {
+            for (int w = 0; w < rampWidthCells; ++w) {
+                const int cx = topX + dx * t + px * w;
+                const int cz = topZ + dz * t + pz * w;
+                if (!ownedBy(bi, cx, cz)) return false;
+            }
+        }
+        return true;
+    };
+
+    // Choose one ramp per building: top is near a wall (optionally inset), base stays inward.
+    for (int bi = 0; bi < static_cast<int>(buildings.size()); ++bi) {
+        const int floors = buildingFloorCount(bi);
+        if (floors < 2) continue;
+
+        struct Cand { int x, z, dir, perpSign; };
+        std::vector<Cand> candidates;
+
+        for (int z = 0; z < cellsPerChunk; ++z) {
+            for (int x = 0; x < cellsPerChunk; ++x) {
+                if (!ownedBy(bi, x, z)) continue;
+                for (int dir = 0; dir < 4; ++dir) {
+                    if (!isBoundaryCell(x, z, dir)) continue;
+                    // Try width on either side of the top cell.
+                    for (int ps : {+1, -1}) {
+                        if (canPlaceRamp(bi, x, z, dir, ps)) {
+                            candidates.push_back({x, z, dir, ps});
+                        }
+                    }
+                }
+            }
+        }
+
+        if (candidates.empty()) continue;
+
+        // Deterministic pick.
+        const double r = deterministic_unit(seed + 5555, chunkCx, chunkCz, bi);
+        const int idx = std::clamp(static_cast<int>(std::floor(r * candidates.size())), 0, static_cast<int>(candidates.size()) - 1);
+        const Cand c = candidates[idx];
+
+        // Convert boundary (wall-adjacent) cell to actual ramp top cell (possibly inset).
+        int dx = 0, dz = 0;
+        switch (c.dir) {
+            case 0: dx = 0; dz = +1; break;
+            case 1: dx = 0; dz = -1; break;
+            case 2: dx = +1; dz = 0; break;
+            case 3: dx = -1; dz = 0; break;
+            default: break;
+        }
+        const int rampTopX = c.x + dx * rampTopInsetCells;
+        const int rampTopZ = c.z + dz * rampTopInsetCells;
+
+        RampPlan rp;
+        rp.valid = true;
+        rp.wallDir = c.dir;
+        rp.topX = rampTopX;
+        rp.topZ = rampTopZ;
+        rp.len = rampLengthCells;
+        rp.width = rampWidthCells;
+        rp.landing = rampLandingCells;
+        rp.perpSign = c.perpSign;
+        rampPlans[bi] = rp;
+    }
+
+    // Export ramp plans for gameplay sampling.
+    outRampPlans.resize(buildings.size());
+    for (int bi = 0; bi < static_cast<int>(buildings.size()); ++bi) {
+        BuildingRampPlan out;
+        if (bi >= 0 && bi < static_cast<int>(rampPlans.size())) {
+            const RampPlan& rp = rampPlans[bi];
+            out.valid = rp.valid;
+            out.wallDir = rp.wallDir;
+            out.topX = rp.topX;
+            out.topZ = rp.topZ;
+            out.len = rp.len;
+            out.width = rp.width;
+            out.landing = rp.landing;
+            out.perpSign = rp.perpSign;
+        }
+        outRampPlans[bi] = out;
+    }
+
     for (int z = 0; z < cellsPerChunk; ++z) {
         for (int x = 0; x < cellsPerChunk; ++x) {
             if (cellType(x, z) != 4) continue;
@@ -590,6 +814,28 @@ void BuildBuildingMeshesAndDoorsFromGrid(
                 glm::vec3 f01(v01.x, v01.y + kFloorEpsY, v01.z);
                 glm::vec3 f11(v11.x, v11.y + kFloorEpsY, v11.z);
                 addQuad(MeshKind::Solid, f00, f10, f01, f11);
+            }
+
+            // Interior floors (multiple storeys). These are render-only surfaces.
+            {
+                const int bi = ownerGrid[z][x];
+                const int floors = buildingFloorCount(bi);
+                if (floors > 1) {
+                    constexpr float kInteriorFloorEpsY = 0.012f;
+                    for (int fi = 1; fi < floors; ++fi) {
+                        // If there's a ramp underneath/through this floor level, cut a hole.
+                        if (bi >= 0 && bi < static_cast<int>(rampPlans.size()) && rampPlans[bi].CoversCell(x, z)) {
+                            continue;
+                        }
+                        const float yOff = static_cast<float>(fi) * floorHeight;
+                        if (yOff >= h - 0.05f) break;
+                        glm::vec3 p00(v00.x, v00.y + yOff + kInteriorFloorEpsY, v00.z);
+                        glm::vec3 p10(v10.x, v10.y + yOff + kInteriorFloorEpsY, v10.z);
+                        glm::vec3 p01(v01.x, v01.y + yOff + kInteriorFloorEpsY, v01.z);
+                        glm::vec3 p11(v11.x, v11.y + yOff + kInteriorFloorEpsY, v11.z);
+                        addQuad(MeshKind::Solid, p00, p10, p01, p11);
+                    }
+                }
             }
 
             // Roof
@@ -646,6 +892,96 @@ void BuildBuildingMeshesAndDoorsFromGrid(
             emitFacade(v10, v11, heightAt(x + 1, z), /*dir=*/3, doorBits);
         }
     }
+
+    // Simple sloped ramps inside buildings to connect consecutive floors.
+    // Geometry-only (no collision/physics integration).
+    {
+        constexpr float kRampEpsY = 0.02f;
+
+        for (int bi = 0; bi < static_cast<int>(buildings.size()); ++bi) {
+            const int floors = buildingFloorCount(bi);
+            if (floors < 2) continue;
+            if (bi < 0 || bi >= static_cast<int>(rampPlans.size())) continue;
+            const RampPlan& rp = rampPlans[bi];
+            if (!rp.valid) continue;
+
+            // Inward direction and perpendicular direction.
+            int dx = 0, dz = 0;
+            int px = 0, pz = 0;
+            switch (rp.wallDir) {
+                case 0: dx = 0; dz = +1; px = +1; pz = 0; break;
+                case 1: dx = 0; dz = -1; px = +1; pz = 0; break;
+                case 2: dx = +1; dz = 0; px = 0; pz = +1; break;
+                case 3: dx = -1; dz = 0; px = 0; pz = +1; break;
+                default: break;
+            }
+            px *= rp.perpSign;
+            pz *= rp.perpSign;
+
+            // Use wall-touching top edge in vertex coordinates.
+            int topVX = rp.topX;
+            int topVZ = rp.topZ;
+            if (rp.wallDir == 1) topVZ = rp.topZ + 1; // south wall is at z+1
+            if (rp.wallDir == 3) topVX = rp.topX + 1; // east wall is at x+1
+
+            const int botVX = topVX + dx * rp.len;
+            const int botVZ = topVZ + dz * rp.len;
+
+            // Width in vertex coords spans `width` cells -> +width vertices along perpendicular.
+            const int topVX2 = topVX + px * rp.width;
+            const int topVZ2 = topVZ + pz * rp.width;
+            const int botVX2 = botVX + px * rp.width;
+            const int botVZ2 = botVZ + pz * rp.width;
+
+            const glm::vec3 vTop0 = terrainV(topVX, topVZ);
+            const glm::vec3 vTop1 = terrainV(topVX2, topVZ2);
+            const glm::vec3 vBot0 = terrainV(botVX, botVZ);
+            const glm::vec3 vBot1 = terrainV(botVX2, botVZ2);
+
+            for (int fi = 0; fi < floors - 1; ++fi) {
+                const float yLow = static_cast<float>(fi) * floorHeight + kRampEpsY;
+                const float yHigh = static_cast<float>(fi + 1) * floorHeight + kRampEpsY;
+
+                // Ramp base is inward; top is on the wall.
+                glm::vec3 a(vBot0.x, vBot0.y + yLow, vBot0.z);
+                glm::vec3 b(vTop0.x, vTop0.y + yHigh, vTop0.z);
+                glm::vec3 c(vBot1.x, vBot1.y + yLow, vBot1.z);
+                glm::vec3 d(vTop1.x, vTop1.y + yHigh, vTop1.z);
+                addQuad(MeshKind::Solid, a, b, c, d);
+            }
+        }
+    }
+}
+
+void BuildBuildingMeshesAndDoorsFromGrid(
+    int chunkCx,
+    int chunkCz,
+    int chunkSize,
+    const std::vector<std::vector<int>>& roadGrid,
+    const std::vector<BuildingShape>& buildings,
+    const std::vector<float>& terrainVertices,
+    std::vector<float>& outSolidVertices,
+    std::vector<unsigned int>& outSolidIndices,
+    std::vector<float>& outWindowVertices,
+    std::vector<unsigned int>& outWindowIndices,
+    std::vector<uint8_t>& outDoorMask) {
+
+    std::vector<int16_t> ownerGrid;
+    std::vector<BuildingRampPlan> rampPlans;
+    BuildBuildingMeshesAndDoorsFromGrid(
+        chunkCx,
+        chunkCz,
+        chunkSize,
+        roadGrid,
+        buildings,
+        terrainVertices,
+        outSolidVertices,
+        outSolidIndices,
+        outWindowVertices,
+        outWindowIndices,
+        outDoorMask,
+        ownerGrid,
+        rampPlans);
 }
 
 } // namespace BuildingsMesh

@@ -15,6 +15,7 @@
 #include <world/streets/streets.h>
 #include <world/buildings/buildings.h>
 #include <assets/objects/models/2d/polygon/mesh.h>
+#include <utils/collision/mesh_collider.h>
 #include <limits>
 #include <algorithm>
 #include <iostream>
@@ -63,6 +64,11 @@ struct ChunkCpuData {
     // Per building-cell door openings for collision (4-bit mask per cell: N,S,W,E).
     std::vector<uint8_t> buildingDoorMask;
 
+    // Per building-cell ownership (flattened cellsPerChunk*cellsPerChunk). -1 means none.
+    std::vector<int16_t> buildingOwner;
+    // Ramp plan per building (size == buildings.size()).
+    std::vector<BuildingsMesh::BuildingRampPlan> buildingRampPlans;
+
     std::vector<ChunkBlueprintInput> blueprints;
 };
 
@@ -105,9 +111,18 @@ struct Chunk {
 
     // Per building-cell door openings for collision (4-bit mask per cell: N,S,W,E).
     std::vector<uint8_t> buildingDoorMask;
+    // Per building-cell ownership (flattened cellsPerChunk*cellsPerChunk). -1 means none.
+    std::vector<int16_t> buildingOwner;
+    // Ramp plan per building (size == buildings.size()).
+    std::vector<BuildingsMesh::BuildingRampPlan> buildingRampPlans;
     // Terrain vertices for filtering
     std::vector<float> terrainVertices;
     std::vector<unsigned int> terrainIndices;
+
+    // MeshCollider for building walls/windows (XZ circle queries).
+    MeshColliderXZ buildingWallCollider;
+    // MeshCollider for building walkable/ceiling surfaces (floors, ramps, roof from solid mesh).
+    MeshColliderXZ buildingSurfaceCollider;
 
     // Axis-aligned bounding box enclosing all geometry in this chunk.
     AABB aabb;
@@ -213,6 +228,61 @@ static float sampleHeight(float x, float z) {
 
 float SampleTerrainHeight(float x, float z) {
     return sampleHeight(x, z);
+}
+
+bool SampleWalkableFloorAndCeiling(float x, float z, float feetY, float& outFloorY, float& outCeilingY) {
+    outFloorY = SampleTerrainHeight(x, z);
+    outCeilingY = std::numeric_limits<float>::infinity();
+
+    if (g_scale <= 0.0f) return false;
+
+    const int cellsPerChunk = g_chunkSize - 1;
+    if (cellsPerChunk <= 0) return false;
+
+    // Global cell coordinates.
+    const int cellX = static_cast<int>(std::floor(x / g_scale));
+    const int cellZ = static_cast<int>(std::floor(z / g_scale));
+
+    // Chunk and local cell coords (floor division for negatives).
+    const int cx = static_cast<int>(std::floor(static_cast<float>(cellX) / static_cast<float>(cellsPerChunk)));
+    const int cz = static_cast<int>(std::floor(static_cast<float>(cellZ) / static_cast<float>(cellsPerChunk)));
+    const int localX = cellX - cx * cellsPerChunk;
+    const int localZ = cellZ - cz * cellsPerChunk;
+
+    if (localX < 0 || localX >= cellsPerChunk || localZ < 0 || localZ >= cellsPerChunk) return false;
+
+    auto it = g_chunks.find(keyFor(cx, cz));
+    if (it == g_chunks.end()) return false;
+    Chunk& c = it->second;
+    if (c.roadGrid.empty()) return false;
+    if (localZ >= static_cast<int>(c.roadGrid.size()) || localX >= static_cast<int>(c.roadGrid[localZ].size())) return false;
+    if (c.roadGrid[localZ][localX] != BUILDING) return false;
+
+    const auto& playerParams = CoreParams::GetPlayerParams();
+    const float stepHeight = std::clamp(playerParams.value("step_height", 0.6f), 0.0f, 2.0f);
+
+    if (!c.buildingSurfaceCollider.Empty()) {
+        float meshFloor = -std::numeric_limits<float>::infinity();
+        float meshCeil = std::numeric_limits<float>::infinity();
+        const bool sampled = c.buildingSurfaceCollider.SampleFloorAndCeilingAtXZ(
+            glm::vec2(x, z),
+            feetY,
+            stepHeight,
+            meshFloor,
+            meshCeil,
+            /*minNormalYAbs=*/0.35f);
+
+        if (sampled) {
+            if (std::isfinite(meshFloor)) {
+                outFloorY = std::max(outFloorY, meshFloor);
+            }
+            if (std::isfinite(meshCeil)) {
+                outCeilingY = meshCeil;
+            }
+        }
+    }
+
+    return true;
 }
 
 static void generateHeightmapAndGrid(Chunk& c) {
@@ -350,6 +420,8 @@ static void createBuildingMeshFromGrid(Chunk& c, GLuint& VAO, GLuint& VBO, GLuin
     std::vector<float> windowVertices;
     std::vector<unsigned int> windowIndices;
     std::vector<uint8_t> doorMask;
+    std::vector<int16_t> ownerGrid;
+    std::vector<BuildingsMesh::BuildingRampPlan> rampPlans;
 
     BuildingsMesh::BuildBuildingMeshesAndDoorsFromGrid(
         c.cx,
@@ -362,9 +434,29 @@ static void createBuildingMeshFromGrid(Chunk& c, GLuint& VAO, GLuint& VBO, GLuin
         solidIndices,
         windowVertices,
         windowIndices,
-        doorMask);
+        doorMask,
+        ownerGrid,
+        rampPlans);
 
     c.buildingDoorMask = std::move(doorMask);
+    c.buildingOwner = std::move(ownerGrid);
+    c.buildingRampPlans = std::move(rampPlans);
+
+    // Build wall collider from both solid and windows meshes.
+    // Doors are true openings (triangles skipped during mesh build), but window quads
+    // are still walls physically, so include them for collision.
+    {
+        std::vector<const std::vector<float>*> vstreams{&solidVertices, &windowVertices};
+        std::vector<const std::vector<unsigned int>*> istreams{&solidIndices, &windowIndices};
+        c.buildingWallCollider.BuildFromMeshes(vstreams, istreams, /*keepMostlyVertical=*/true, /*normalYMaxAbs=*/0.25f);
+    }
+
+    // Build floor/ramp/roof surface collider from solid mesh only.
+    {
+        std::vector<const std::vector<float>*> vstreams{&solidVertices};
+        std::vector<const std::vector<unsigned int>*> istreams{&solidIndices};
+        c.buildingSurfaceCollider.BuildFromMeshes(vstreams, istreams, /*keepMostlyVertical=*/false);
+    }
 
     if (!solidVertices.empty() && !solidIndices.empty()) {
         glGenVertexArrays(1, &VAO);
@@ -606,6 +698,9 @@ static void destroyChunk(Chunk& c) {
         DestroyPolygonMesh(polygonMesh);
     }
     c.buildingPolygonMeshes.clear();
+
+    c.buildingWallCollider.Clear();
+    c.buildingSurfaceCollider.Clear();
 }
 
 static float sampleHeightWithPerlin(noise::module::Perlin& perlin, float x, float z) {
@@ -708,7 +803,9 @@ static void BuildBuildingMeshFromGridCpu(const ChunkCpuData& src,
                                         std::vector<unsigned int>& indices,
                                         std::vector<float>& windowVertices,
                                         std::vector<unsigned int>& windowIndices,
-                                        std::vector<uint8_t>& doorMask) {
+                                        std::vector<uint8_t>& doorMask,
+                                        std::vector<int16_t>& outOwnerGrid,
+                                        std::vector<BuildingsMesh::BuildingRampPlan>& outRampPlans) {
     BuildingsMesh::BuildBuildingMeshesAndDoorsFromGrid(
         src.cx,
         src.cz,
@@ -720,7 +817,9 @@ static void BuildBuildingMeshFromGridCpu(const ChunkCpuData& src,
         indices,
         windowVertices,
         windowIndices,
-        doorMask);
+        doorMask,
+        outOwnerGrid,
+        outRampPlans);
 }
 
 static void BuildBlueprintInputsCpu(ChunkCpuData& out, noise::module::Perlin& perlin) {
@@ -775,7 +874,9 @@ static ChunkCpuData GenerateChunkCpuData(int cx, int cz, noise::module::Perlin& 
                                 out.buildingMeshIndices,
                                 out.buildingWindowMeshVertices,
                                 out.buildingWindowMeshIndices,
-                                out.buildingDoorMask);
+                                out.buildingDoorMask,
+                                out.buildingOwner,
+                                out.buildingRampPlans);
     BuildBlueprintInputsCpu(out, perlin);
     return out;
 }
@@ -873,7 +974,23 @@ static void ProcessReadyChunks(int currentCx, int currentCz) {
         UploadMeshToGpu(data.buildingMeshVertices, data.buildingMeshIndices, c.buildingVAO, c.buildingVBO, c.buildingEBO, c.buildingIndexCount);
         UploadMeshToGpu(data.buildingWindowMeshVertices, data.buildingWindowMeshIndices, c.buildingWindowsVAO, c.buildingWindowsVBO, c.buildingWindowsEBO, c.buildingWindowsIndexCount);
 
+        // Build wall collider from CPU-side building meshes before the CPU buffers go out of scope.
+        {
+            std::vector<const std::vector<float>*> vstreams{&data.buildingMeshVertices, &data.buildingWindowMeshVertices};
+            std::vector<const std::vector<unsigned int>*> istreams{&data.buildingMeshIndices, &data.buildingWindowMeshIndices};
+            c.buildingWallCollider.BuildFromMeshes(vstreams, istreams, /*keepMostlyVertical=*/true, /*normalYMaxAbs=*/0.25f);
+        }
+
+        // Build floor/ramp/roof surface collider from solid building mesh.
+        {
+            std::vector<const std::vector<float>*> vstreams{&data.buildingMeshVertices};
+            std::vector<const std::vector<unsigned int>*> istreams{&data.buildingMeshIndices};
+            c.buildingSurfaceCollider.BuildFromMeshes(vstreams, istreams, /*keepMostlyVertical=*/false);
+        }
+
         c.buildingDoorMask = std::move(data.buildingDoorMask);
+        c.buildingOwner = std::move(data.buildingOwner);
+        c.buildingRampPlans = std::move(data.buildingRampPlans);
 
         c.buildingPolygonMeshes.clear();
         c.buildingPolygonMeshes.reserve(data.blueprints.size());
@@ -1270,69 +1387,45 @@ static uint8_t doorMaskCellGlobal(int cellX, int cellZ) {
 }
 
 bool CollidesWithBuilding(float x, float z, float radius) {
+    // Backwards-compatible: collide against all wall triangles regardless of height.
+    return CollidesWithBuilding(x, z, radius, -1e30f, +1e30f);
+}
+
+bool CollidesWithBuilding(float x, float z, float radius, float yMin, float yMax) {
     if (g_scale <= 0.0f) return false;
 
     // Treat point-test as a tiny circle so walls are respected.
     if (radius <= 0.0f) radius = std::max(0.001f, g_scale * 0.02f);
 
-    const float minX = x - radius;
-    const float maxX = x + radius;
-    const float minZ = z - radius;
-    const float maxZ = z + radius;
+    const float chunkWorld = (g_chunkSize - 1) * g_scale;
+    if (chunkWorld <= 0.0f) return false;
 
-    const int minCellX = static_cast<int>(std::floor(minX / g_scale));
-    const int maxCellX = static_cast<int>(std::floor(maxX / g_scale));
-    const int minCellZ = static_cast<int>(std::floor(minZ / g_scale));
-    const int maxCellZ = static_cast<int>(std::floor(maxZ / g_scale));
-
+    const glm::vec2 center(x, z);
     const float r2 = radius * radius;
-    const float wallThickness = std::clamp(g_scale * 0.18f, 0.05f, g_scale);
 
-    auto circleIntersectsAabbXZ = [&](float ax0, float az0, float ax1, float az1) -> bool {
-        const float closestX = std::clamp(x, ax0, ax1);
-        const float closestZ = std::clamp(z, az0, az1);
-        const float dx = x - closestX;
-        const float dz = z - closestZ;
-        return (dx * dx + dz * dz) <= r2;
-    };
+    // Only scan chunks that overlap the circle's AABB.
+    const int minCx = static_cast<int>(std::floor((x - radius) / chunkWorld));
+    const int maxCx = static_cast<int>(std::floor((x + radius) / chunkWorld));
+    const int minCz = static_cast<int>(std::floor((z - radius) / chunkWorld));
+    const int maxCz = static_cast<int>(std::floor((z + radius) / chunkWorld));
 
-    // Scan nearby building cells and test only their boundary wall edges (doors are skipped).
-    // Expand by one cell to catch edges near the circle boundary.
-    for (int cellZ = minCellZ - 1; cellZ <= maxCellZ + 1; ++cellZ) {
-        for (int cellX = minCellX - 1; cellX <= maxCellX + 1; ++cellX) {
-            if (!isBuildingCellGlobal(cellX, cellZ)) continue;
+    for (int cz = minCz; cz <= maxCz; ++cz) {
+        for (int cx = minCx; cx <= maxCx; ++cx) {
+            auto it = g_chunks.find(keyFor(cx, cz));
+            if (it == g_chunks.end()) continue;
+            const Chunk& c = it->second;
+            if (c.buildingWallCollider.Empty()) continue;
 
-            const uint8_t doorBits = doorMaskCellGlobal(cellX, cellZ);
+            // Broadphase: circle vs collider bounds.
+            const glm::vec2 bmin = c.buildingWallCollider.BoundsMinXZ();
+            const glm::vec2 bmax = c.buildingWallCollider.BoundsMaxXZ();
+            const float closestX = std::clamp(center.x, bmin.x, bmax.x);
+            const float closestZ = std::clamp(center.y, bmin.y, bmax.y);
+            const float dx = center.x - closestX;
+            const float dz = center.y - closestZ;
+            if ((dx * dx + dz * dz) > r2) continue;
 
-            const float x0 = static_cast<float>(cellX) * g_scale;
-            const float z0 = static_cast<float>(cellZ) * g_scale;
-            const float x1 = x0 + g_scale;
-            const float z1 = z0 + g_scale;
-
-            // North wall (edge at z0)
-            if (!isBuildingCellGlobal(cellX, cellZ - 1)) {
-                if ((doorBits & BuildingsMesh::DoorN) == 0) {
-                    if (circleIntersectsAabbXZ(x0, z0 - wallThickness, x1, z0 + wallThickness)) return true;
-                }
-            }
-            // South wall (edge at z1)
-            if (!isBuildingCellGlobal(cellX, cellZ + 1)) {
-                if ((doorBits & BuildingsMesh::DoorS) == 0) {
-                    if (circleIntersectsAabbXZ(x0, z1 - wallThickness, x1, z1 + wallThickness)) return true;
-                }
-            }
-            // West wall (edge at x0)
-            if (!isBuildingCellGlobal(cellX - 1, cellZ)) {
-                if ((doorBits & BuildingsMesh::DoorW) == 0) {
-                    if (circleIntersectsAabbXZ(x0 - wallThickness, z0, x0 + wallThickness, z1)) return true;
-                }
-            }
-            // East wall (edge at x1)
-            if (!isBuildingCellGlobal(cellX + 1, cellZ)) {
-                if ((doorBits & BuildingsMesh::DoorE) == 0) {
-                    if (circleIntersectsAabbXZ(x1 - wallThickness, z0, x1 + wallThickness, z1)) return true;
-                }
-            }
+            if (c.buildingWallCollider.IntersectsCircleXZ(center, radius, yMin, yMax)) return true;
         }
     }
 
